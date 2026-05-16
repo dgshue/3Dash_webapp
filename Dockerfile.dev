@@ -19,7 +19,10 @@ RUN npm ci
 # Copy the rest of the source and build
 COPY . .
 ENV NODE_OPTIONS="--max-old-space-size=4096"
-RUN npm run build
+# Use --mode addon so the build emits relative asset paths (base "./")
+# This lets nginx serve everything from root regardless of mount path,
+# matching how the HA add-on serves the app.
+RUN npm run build -- --mode addon
 
 # Stage 2: Serve the built SPA with nginx
 FROM nginx:1.27-alpine AS runtime
