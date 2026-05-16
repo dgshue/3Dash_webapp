@@ -1,0 +1,64 @@
+# Dev container for the 3Dash dgshue fork.
+# Used for iteration on the BLE tracker feature (and future enhancements)
+# before adding the fork as a HA add-on.
+#
+# Build:  docker build -f Dockerfile.dev -t 3dash-dev .
+# Run:    docker run --rm -p 8099:80 3dash-dev
+#
+# In Portainer, deploy as a stack with build:. directive (see docker-compose.dev.yml).
+
+# Stage 1: Build the SPA from local source
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy package manifests first for better layer caching
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Copy the rest of the source and build
+COPY . .
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+RUN npm run build
+
+# Stage 2: Serve the built SPA with nginx
+FROM nginx:1.27-alpine AS runtime
+
+# Drop default site and replace with our SPA-friendly config
+RUN rm -f /etc/nginx/conf.d/default.conf
+
+COPY <<'EOF' /etc/nginx/conf.d/3dash.conf
+server {
+    listen 80 default_server;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # SPA fallback: anything not a real file falls back to index.html
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Tell browsers/CDN not to cache the SPA shell so new builds appear
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
+    # Aggressive caching for hashed asset bundles (vite renames them per build)
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # Service worker should not be cached
+    location = /sw.js {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+}
+EOF
+
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

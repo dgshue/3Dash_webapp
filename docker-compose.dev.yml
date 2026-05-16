@@ -1,0 +1,24 @@
+# Portainer stack file for the 3Dash dev container.
+#
+# Usage in Portainer:
+#   Stacks → Add Stack → Repository
+#     Repository URL:      https://github.com/dgshue/3Dash_webapp
+#     Repository reference: refs/heads/dev
+#     Compose path:        docker-compose.dev.yml
+#   Auto-update: every 5 minutes (or webhook on push)
+#
+# After deploy, browse to http://192.168.1.10:8099 (Portainer host) and
+# point the app at your HA URL/token. The build context is the repo root,
+# so any source change committed to dev rebuilds the image on next pull.
+
+services:
+  3dash-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: 3dash-dev
+    ports:
+      - "8099:80"
+    restart: unless-stopped
+    labels:
+      io.portainer.accesscontrol.public: "true"
