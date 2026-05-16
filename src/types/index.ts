@@ -65,6 +65,29 @@ export interface LightGroup {
   name: string;
 }
 
+// --- BLE Trackers (Bermuda / Private BLE Device) ---
+
+export interface TrackerConfig {
+  /** HA device_tracker.* entity (Bermuda BLE / Private BLE Device). Primary identity. */
+  entityId: string;
+  /** Optional HA sensor.*_area entity that reports the current area_id. */
+  areaEntityId?: string;
+  label: string;
+  /** Sphere diameter (world units, default 0.3). */
+  diameter?: number;
+  /** Emissive color (hex string, default "#4ade80"). */
+  color?: string;
+  /** Glow intensity multiplier (default 1). */
+  glow?: number;
+  /** Fallback world position when no area mapping matches. */
+  position: LightPosition;
+  /** Map of HA area_id -> world coordinate. The sphere snaps here when the
+   *  area sensor's state equals this key. */
+  areaPositions: Record<string, LightPosition>;
+  /** Hide the sphere when device_tracker state == "not_home" (default true). */
+  hideWhenAway?: boolean;
+}
+
 // --- Shadow Walls (invisible roof / sun blockers) ---
 
 export interface ShadowWallConfig {
@@ -155,6 +178,7 @@ export interface AppConfig {
   shadowWalls?: ShadowWallConfig[];
   sidePanel?: SidePanelConfig;
   tubes?: TubeConfig[];
+  trackers?: TrackerConfig[];
   onboarding?: OnboardingState;
 }
 
@@ -176,6 +200,7 @@ export interface FullConfig {
   shadowWalls?: ShadowWallConfig[];
   sidePanel?: SidePanelConfig;
   tubes?: TubeConfig[];
+  trackers?: TrackerConfig[];
   onboarding?: OnboardingState;
 }
 

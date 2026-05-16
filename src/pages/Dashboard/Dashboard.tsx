@@ -35,6 +35,15 @@ import { createWeatherEffects, type WeatherEffectsContext } from '../../babylon/
 import { fetchWeather, type WeatherData } from '../../services/weatherApi';
 import { showGroundGrid, hideGroundGrid, syncGridColors, disposeGroundGrid, createModelShadow } from '../../babylon/GroundGrid';
 import { createTubeMeshes, updateTubeValue, disposeAllTubes, setTubeTheme, type TubeMap } from '../../babylon/TubeMeshFactory';
+import {
+  createTrackerMesh,
+  animateTrackerTo,
+  setTrackerPosition,
+  setTrackerVisible,
+  disposeAllTrackers,
+  targetForArea,
+  type TrackerMeshMap,
+} from '../../babylon/TrackerMeshFactory';
 import HUD from '../../components/HUD';
 import LightModal from '../../components/LightModal';
 import RemoteModal from '../../components/RemoteModal';
@@ -46,7 +55,7 @@ import GuidedTour from '../../components/GuidedTour/GuidedTour';
 import { dashboardTourSteps } from '../../components/GuidedTour/tourSteps';
 import CardPropertiesPanel from '../../components/SidePanel/CardPropertiesPanel';
 import { SIMULATION_CONFIG, SIMULATION_MODEL_URL } from '../../data/simulationData';
-import type { AppConfig, DisplayConfig, LightConfig, RemoteButton, HAState, CardLayout, SidePanelCard } from '../../types';
+import type { AppConfig, DisplayConfig, LightConfig, RemoteButton, HAState, CardLayout, SidePanelCard, TrackerConfig } from '../../types';
 import './Dashboard.css';
 
 const LONG_PRESS_MS = 500;
@@ -62,6 +71,9 @@ export default function Dashboard() {
   const meshMapRef = useRef<MeshMap>({});
   const displayMeshMapRef = useRef<DisplayMeshMap>({});
   const tubeMapRef = useRef<TubeMap>({});
+  const trackerMapRef = useRef<TrackerMeshMap>({});
+  /** areaEntityId -> trackerEntityId, for routing area-sensor state changes. */
+  const trackerAreaToEntityRef = useRef<Record<string, string>>({});
   const haRef = useRef<HALike | null>(null);
   const configRef = useRef<AppConfig | null>(null);
   const lastStatesRef = useRef<Record<string, HAState>>({});
@@ -816,6 +828,15 @@ export default function Dashboard() {
           tubeMapRef.current[tc.id] = createTubeMeshes(ctx.scene, tc, ctx.glowLayer);
         }
 
+        // Create BLE tracker meshes (moving dots for tracked phones/watches)
+        const trackerConfigs = config.trackers || [];
+        for (const tc of trackerConfigs) {
+          trackerMapRef.current[tc.entityId] = createTrackerMesh(ctx.scene, tc);
+          if (tc.areaEntityId) {
+            trackerAreaToEntityRef.current[tc.areaEntityId] = tc.entityId;
+          }
+        }
+
         // Weather effects (rain/snow particles + cloud cover)
         weatherRef.current = createWeatherEffects(ctx.scene, sunShadowGen ?? undefined);
         const pollWeather = async () => {
@@ -994,6 +1015,8 @@ export default function Dashboard() {
         removeDisplayMesh(displayMeshMapRef.current, id),
       );
       disposeAllTubes(tubeMapRef.current);
+      disposeAllTrackers(trackerMapRef.current);
+      trackerAreaToEntityRef.current = {};
       if (weatherIntervalRef) clearInterval(weatherIntervalRef);
       weatherRef.current?.dispose();
       weatherRef.current = null;
@@ -1024,11 +1047,104 @@ export default function Dashboard() {
       }
     }
 
+    /** Auto-discover Bermuda / Private BLE Device trackers from HA's initial
+     *  state dump. Runs once when no trackers are configured yet. Generates a
+     *  TrackerConfig per device_tracker.* whose source_type === 'bluetooth_le',
+     *  guesses sensor.*_area + sensor.*_floor as the area entity, places spheres
+     *  in a circle at scene origin so the user can find + tune them later. */
+    const autoDiscoverTrackersFromStates = (states: HAState[]) => {
+      const TRACKER_COLORS = ['#4ade80', '#60a5fa', '#f472b6', '#fb923c', '#a78bfa', '#fbbf24', '#34d399', '#f87171'];
+      const candidates = states.filter(s =>
+        s.entity_id.startsWith('device_tracker.') &&
+        (s.attributes as Record<string, unknown> | undefined)?.source_type === 'bluetooth_le',
+      );
+      if (!candidates.length) {
+        console.info('[3Dash][tracker] auto-discover: no bluetooth_le device_trackers in HA');
+        return;
+      }
+      // Default room positions — overridable per tracker after first build.
+      const defaultAreas: Record<string, { x: number; y: number; z: number }> = {
+        living_room: { x: -3, y: 1.2, z: -2 },
+        kitchen: { x: 2, y: 1.2, z: -2 },
+        dining_room: { x: 2, y: 1.2, z: 2 },
+        laundry_room: { x: -3, y: 1.2, z: 3 },
+        bathroom: { x: 0, y: 1.2, z: 0 },
+      };
+      const trackers: TrackerConfig[] = candidates.map((s, i) => {
+        const slug = s.entity_id.replace('device_tracker.', '');
+        const labelFromAttrs = (s.attributes as Record<string, unknown> | undefined)?.friendly_name as string | undefined;
+        const angle = (i / candidates.length) * Math.PI * 2;
+        return {
+          entityId: s.entity_id,
+          areaEntityId: `sensor.${slug}_area`,
+          label: labelFromAttrs ?? slug,
+          diameter: 0.35,
+          color: TRACKER_COLORS[i % TRACKER_COLORS.length],
+          glow: 1,
+          position: { x: Math.cos(angle) * 2, y: 1.5, z: Math.sin(angle) * 2 },
+          areaPositions: { ...defaultAreas },
+          hideWhenAway: true,
+        };
+      });
+      console.info(`[3Dash][tracker] auto-discovered ${trackers.length} BLE trackers, saving config`);
+      // Persist + create meshes immediately (no full reload required)
+      configRef.current = { ...(configRef.current as AppConfig), trackers };
+      updateConfig({ trackers });
+      const scene = sceneCtxRef.current?.scene;
+      if (!scene) return;
+      for (const t of trackers) {
+        trackerMapRef.current[t.entityId] = createTrackerMesh(scene, t);
+        if (t.areaEntityId) trackerAreaToEntityRef.current[t.areaEntityId] = t.entityId;
+      }
+      // Apply current states to the new meshes
+      for (const state of states) {
+        const tEntry = trackerMapRef.current[state.entity_id];
+        if (tEntry) {
+          const away = state.state === 'not_home' || state.state === 'unavailable' || state.state === 'unknown';
+          setTrackerVisible(tEntry, !(away && (tEntry.config.hideWhenAway ?? true)));
+        }
+        const areaOwnerId = trackerAreaToEntityRef.current[state.entity_id];
+        if (areaOwnerId) {
+          const e = trackerMapRef.current[areaOwnerId];
+          if (e) {
+            const tgt = targetForArea(e.config, state.state);
+            setTrackerPosition(e, tgt);
+            e.currentAreaId = state.state;
+          }
+        }
+      }
+    };
+
+    // Build lookup: tracker area-sensor entity → tracker entity (initialized
+    // from already-loaded trackers; auto-discovery extends it later)
+    for (const t of config.trackers ?? []) {
+      if (t.areaEntityId) trackerAreaToEntityRef.current[t.areaEntityId] = t.entityId;
+    }
+
     const callbacks = {
       onStatusChanged: (status: HAConnectionStatus) => setHaStatus(status),
       onStateChanged: (entityId: string, state: HAState) => {
         stopPendingFeedback(entityId);
         if (meshMapRef.current[entityId]) applyLightState(entityId, state);
+
+        // BLE tracker: device_tracker.* state changed (home / not_home)
+        const trackerEntry = trackerMapRef.current[entityId];
+        if (trackerEntry) {
+          const away = state.state === 'not_home' || state.state === 'unavailable' || state.state === 'unknown';
+          const visible = !(away && (trackerEntry.config.hideWhenAway ?? true));
+          setTrackerVisible(trackerEntry, visible);
+        }
+        // BLE tracker: sensor.*_area state changed → animate sphere to new room
+        const areaOwnerId = trackerAreaToEntityRef.current[entityId];
+        if (areaOwnerId && sceneCtxRef.current) {
+          const entry = trackerMapRef.current[areaOwnerId];
+          if (entry) {
+            const target = targetForArea(entry.config, state.state);
+            entry.currentAreaId = state.state;
+            animateTrackerTo(sceneCtxRef.current.scene, entry, target);
+          }
+        }
+
         if (entityId === modalEntityIdRef.current) setModalState(state);
         if (entityId === modalDoubleTapEntityIdRef.current) setModalDoubleTapState(state);
         if (entityId === remoteModalEntityIdRef.current) setRemoteModalState(state);
@@ -1080,7 +1196,32 @@ export default function Dashboard() {
           lastStatesRef.current[state.entity_id] = state;
           if (meshMapRef.current[state.entity_id]) applyLightState(state.entity_id, state);
           if (panelEntities.has(state.entity_id)) newCardStates[state.entity_id] = state;
+
+          // Seed tracker visibility from initial device_tracker state
+          const tEntry = trackerMapRef.current[state.entity_id];
+          if (tEntry) {
+            const away = state.state === 'not_home' || state.state === 'unavailable' || state.state === 'unknown';
+            setTrackerVisible(tEntry, !(away && (tEntry.config.hideWhenAway ?? true)));
+          }
+          // Seed tracker position from initial area sensor state
+          const areaOwnerId = trackerAreaToEntityRef.current[state.entity_id];
+          if (areaOwnerId) {
+            const e = trackerMapRef.current[areaOwnerId];
+            if (e) {
+              const tgt = targetForArea(e.config, state.state);
+              setTrackerPosition(e, tgt);
+              e.currentAreaId = state.state;
+            }
+          }
         });
+
+        // V1 auto-discovery: if no trackers configured yet, scan initial states
+        // for device_tracker.* entities with source_type=bluetooth_le and seed
+        // a tracker config for each. Sphere positions default to the floor-plan
+        // bounds inferred from existing light positions so they're visible.
+        if (!(configRef.current?.trackers && configRef.current.trackers.length)) {
+          autoDiscoverTrackersFromStates(states);
+        }
         if (Object.keys(newCardStates).length > 0) {
           setCardStates(prev => ({ ...prev, ...newCardStates }));
         }
