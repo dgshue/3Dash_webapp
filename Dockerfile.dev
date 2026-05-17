@@ -2,35 +2,42 @@
 # Used for iteration on the BLE tracker feature (and future enhancements)
 # before adding the fork as a HA add-on.
 #
-# Build:  docker build -f Dockerfile.dev -t 3dash-dev .
-# Run:    docker run --rm -p 8099:80 3dash-dev
-#
-# In Portainer, deploy as a stack with build:. directive (see docker-compose.dev.yml).
+# Serves both HTTP (port 80) and HTTPS (port 443) with a self-signed cert.
+# HTTPS is required for embedding in HA's HTTPS Lovelace dashboards as an
+# iframe (browsers block mixed-content http: iframes on https: pages).
 
 # Stage 1: Build the SPA from local source
 FROM node:20-alpine AS builder
 
 WORKDIR /app
-
-# Copy package manifests first for better layer caching
 COPY package.json package-lock.json ./
 RUN npm ci
-
-# Copy the rest of the source and build
 COPY . .
 ENV NODE_OPTIONS="--max-old-space-size=4096"
-# Use --mode addon so the build emits relative asset paths (base "./")
-# This lets nginx serve everything from root regardless of mount path,
-# matching how the HA add-on serves the app.
 RUN npm run build -- --mode addon
 
-# Stage 2: Serve the built SPA with nginx
+# Stage 2: Serve the built SPA with nginx (HTTP + HTTPS)
 FROM nginx:1.27-alpine AS runtime
 
-# Drop default site and replace with our SPA-friendly config
+RUN apk add --no-cache openssl
+
+# Generate a self-signed cert at image-build time. Valid for 5 years.
+# SAN covers the Portainer host LAN IP + localhost so it works from any
+# browser on the network. The first time a browser loads /, the user will
+# see a TLS warning — click "Advanced -> Continue to site". HA's iframe
+# card will load once the cert is accepted in the same tab session.
+RUN mkdir -p /etc/nginx/ssl && openssl req -x509 -nodes \
+    -newkey rsa:2048 -days 1825 \
+    -keyout /etc/nginx/ssl/3dash.key \
+    -out /etc/nginx/ssl/3dash.crt \
+    -subj "/CN=3dash-dev/O=RuView" \
+    -addext "subjectAltName=IP:192.168.1.10,IP:127.0.0.1,DNS:localhost,DNS:3dash.local"
+
 RUN rm -f /etc/nginx/conf.d/default.conf
 
 COPY <<'EOF' /etc/nginx/conf.d/3dash.conf
+# HTTP -> redirect to HTTPS for parity (keeps both ports listening so
+# direct LAN access without the iframe works on either scheme).
 server {
     listen 80 default_server;
     server_name _;
@@ -38,30 +45,37 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
-    # SPA fallback: anything not a real file falls back to index.html
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
+    location / { try_files $uri $uri/ /index.html; }
+    location = /index.html { add_header Cache-Control "no-cache, no-store, must-revalidate"; }
+    location /assets/ { expires 1y; add_header Cache-Control "public, immutable"; }
+    location = /sw.js { add_header Cache-Control "no-cache, no-store, must-revalidate"; }
+}
 
-    # Tell browsers/CDN not to cache the SPA shell so new builds appear
-    location = /index.html {
-        add_header Cache-Control "no-cache, no-store, must-revalidate";
-    }
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    server_name _;
 
-    # Aggressive caching for hashed asset bundles (vite renames them per build)
-    location /assets/ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
+    ssl_certificate     /etc/nginx/ssl/3dash.crt;
+    ssl_certificate_key /etc/nginx/ssl/3dash.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    # Service worker should not be cached
-    location = /sw.js {
-        add_header Cache-Control "no-cache, no-store, must-revalidate";
-    }
+    # Allow embedding from any HTTPS origin (HA Lovelace iframe card)
+    add_header Content-Security-Policy "frame-ancestors *;";
+    add_header X-Frame-Options "ALLOWALL";
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / { try_files $uri $uri/ /index.html; }
+    location = /index.html { add_header Cache-Control "no-cache, no-store, must-revalidate"; }
+    location /assets/ { expires 1y; add_header Cache-Control "public, immutable"; }
+    location = /sw.js { add_header Cache-Control "no-cache, no-store, must-revalidate"; }
 }
 EOF
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-EXPOSE 80
+EXPOSE 80 443
 CMD ["nginx", "-g", "daemon off;"]

@@ -19,6 +19,7 @@ services:
     container_name: 3dash-dev
     ports:
       - "8099:80"
+      - "8443:443"
     restart: unless-stopped
     labels:
       io.portainer.accesscontrol.public: "true"
