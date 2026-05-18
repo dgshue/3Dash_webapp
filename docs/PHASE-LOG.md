@@ -208,6 +208,35 @@ Build clean (`npm run build -- --mode addon`). Standalone
 https://192.168.1.10:8443/ keeps full chrome; `?embed=1` and the
 HA iframe path both hide it.
 
+## Phase UI — Readonly embed follow-up (2026-05-18)
+
+**Shipped.** Adds `?readonly=1` (or `?readonly`) URL param support to
+the embed flow. When present, the floating gear button is hidden
+entirely so HA Lovelace iframe viewers can't open the Settings modal
+or reach config editing surfaces. Standalone (`?embed=0` or no params)
+and embed-without-readonly remain unaffected.
+
+**Changes**:
+- `src/utils/embedMode.ts` — new `isReadonly()` helper following the
+  same `?readonly=0/false` opt-out semantics as `isEmbedded()`.
+  `applyEmbedBodyClass()` now also toggles a `body.embedded-readonly`
+  class and the returned cleanup fn removes both classes.
+- `src/App.css` — single new rule `body.embedded-readonly
+  .side-panel-settings-btn { display: none !important; }` hides the
+  gear when readonly is requested. Standalone-only viewers never see
+  either class so behavior is unchanged.
+
+**Matrix**:
+- https://192.168.1.10:8443/ → full chrome (banner, HUD corners, gear row).
+- https://192.168.1.10:8443/?embed=1 → banner/HUD hidden, gear collapsed
+  to floating bottom-right corner button.
+- https://192.168.1.10:8443/?embed=1&readonly=1 → banner/HUD hidden, gear
+  hidden entirely.
+- HA iframe (`window.top` check) → same as `?embed=1`; combine with
+  `&readonly=1` in the Lovelace iframe card URL for view-only mode.
+
+Build clean (`npm run build -- --mode addon`).
+
 ## Phase Mobile — responsive layout + touch (2026-05-18)
 
 **Shipped.** Fixes the "doesn't pull up on mobile" report by ironing

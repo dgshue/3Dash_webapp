@@ -128,3 +128,8 @@ body.embedded .side-panel-settings-btn {
 body.embedded .side-panel-settings-btn:hover {
   opacity: 1;
 }
+
+/* Readonly embed: hide the gear entirely so HA viewers can't reach Settings. */
+body.embedded-readonly .side-panel-settings-btn {
+  display: none !important;
+}
