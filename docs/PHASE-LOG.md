@@ -295,6 +295,50 @@ sizes (Chrome DevTools device toolbar @ 414×896 confirms the side
 panel renders as a bottom sheet, HUD respects safe-area, and the
 canvas fills the remaining viewport).
 
+## Phase Mobile — follow-up: viewport + orientationchange (2026-05-18)
+
+**Shipped.** Commit `636fec7` on `dev`, pushed and Portainer-redeployed
+(stack 157 returned HTTP 200, ConfigHash matches). Closes two gaps the
+original Phase Mobile commit (`5fa2f45`) missed against the spec:
+
+1. **`index.html` viewport meta** now includes `user-scalable=no`
+   (was `width=device-width, initial-scale=1.0, viewport-fit=cover`).
+   This blocks iOS Safari double-tap-to-zoom and pinch-zoom of the page
+   itself. Babylon still gets pinch via `touch-action: none` on the
+   canvas plus the ArcRotateCamera pointer input.
+2. **`SceneManager.createScene`** now listens for `window.orientationchange`
+   alongside `window.resize`. iOS rotation doesn't always fire a clean
+   resize, so we call `engine.resize()` immediately AND on the next
+   `requestAnimationFrame` to pick up post-layout dimensions. Both
+   listeners are removed in `dispose()`.
+
+**Verification via Chrome DevTools MCP** (iPhone 14 Pro emulation,
+393×852, devicePixelRatio=3, mobile+touch flags). After cache-busting
+reload of `https://192.168.1.10:8443/?embed=0`:
+- `meta[name=viewport]` content = `width=device-width, initial-scale=1,
+  user-scalable=no, viewport-fit=cover` (confirmed).
+- `body { position: fixed; overscroll-behavior: none }` (confirmed).
+- `.dashboard-wrapper { flex-direction: column }`, canvas at
+  `(0, 0, 393, 851)` filling viewport, side panel collapsed to bottom
+  with the 24px handle strip at y=846 — no horizontal scroll
+  (`document.scrollingElement.scrollLeft=0`, `scrollWidth=393`).
+- Console clean of app errors (only the expected self-signed SSL warning
+  and a benign font-preload notice).
+- Screenshot captured at `C:\Users\dgshue\AppData\Local\Temp\phase-mobile-iphone14pro.png`
+  shows the 3D model centered, HUD title bar and clock both clearing
+  the notch via `env(safe-area-inset-*)`.
+
+**Desktop regression check** at 1440×900: `flex-direction: row`,
+panel on left at `(0, 0, 350, 900)`, canvas at `(350, 0, 1090, 900)`,
+handle is a 12px vertical bar with `cursor: col-resize`. Unchanged.
+
+**Real-device caveat**: validated via Chrome DevTools viewport emulation
+only — not on a physical iPhone or in the HA Companion App's WKWebView
+yet. User to confirm on a real device; if a stale service worker is
+still cached from a pre-fix build, force-reload (Safari → Settings →
+Safari → Advanced → Website Data → remove 192.168.1.10) per the note
+above.
+
 ## Phase C — Trilateration + Kalman (2026-05-18)
 
 **Shipped.** Two commits on `dev`: `3b8473a` (Job 1 anchor-discovery
