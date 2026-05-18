@@ -57,18 +57,37 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+html {
+  /* iOS Safari fallback when 100dvh is not supported. */
+  height: -webkit-fill-available;
+}
+
 body {
   background: var(--bg);
   font-family: 'DM Mono', monospace;
   color: var(--text);
+  /* Pin body to viewport so iOS Safari rubber-band scroll can't drag the
+     page out from under the Babylon canvas. */
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
-  width: 100vw;
-  height: 100vh;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation;
 }
 
 #root {
   width: 100%;
   height: 100%;
+  /* Dynamic viewport units handle iOS address-bar collapse/expand. The
+     plain height:100% above is the fallback when 100dvh is unsupported. */
+  height: 100dvh;
 }
 
 @keyframes pulse {

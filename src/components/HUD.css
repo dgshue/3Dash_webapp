@@ -89,14 +89,16 @@
 
 @media (max-width: 768px) {
   .title-bar {
-    top: 16px;
-    left: 18px;
+    /* env(safe-area-inset-*) keeps the HUD clear of the iOS notch / status
+       bar. The max() collapses to 16/18px on non-notch devices. */
+    top: max(16px, env(safe-area-inset-top));
+    left: max(18px, env(safe-area-inset-left));
     gap: 8px;
   }
 
   .hud-logo {
-    width: 12px;
-    height: 12px;
+    width: 14px;
+    height: 14px;
   }
 
   .title-bar .label {
@@ -105,16 +107,16 @@
   }
 
   .time-display {
-    top: 16px;
-    right: 18px;
+    top: max(16px, env(safe-area-inset-top));
+    right: max(18px, env(safe-area-inset-right));
   }
 
   .time-display .time {
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .time-display .date {
-    font-size: 5px;
+    font-size: 8px;
   }
 
   .corner {
@@ -122,8 +124,8 @@
     height: 10px;
   }
 
-  .corner.tl { top: 8px; left: 8px; }
-  .corner.tr { top: 8px; right: 8px; }
-  .corner.bl { bottom: 8px; left: 8px; }
-  .corner.br { bottom: 8px; right: 8px; }
+  .corner.tl { top: max(8px, env(safe-area-inset-top));    left: max(8px, env(safe-area-inset-left)); }
+  .corner.tr { top: max(8px, env(safe-area-inset-top));    right: max(8px, env(safe-area-inset-right)); }
+  .corner.bl { bottom: max(8px, env(safe-area-inset-bottom)); left: max(8px, env(safe-area-inset-left)); }
+  .corner.br { bottom: max(8px, env(safe-area-inset-bottom)); right: max(8px, env(safe-area-inset-right)); }
 }

@@ -22,7 +22,12 @@
   width: calc(100% + 2 * var(--panel-size, 0px));
   height: 100%;
   display: block;
+  /* `touch-action: none` lets Babylon's ArcRotateCamera handle pinch-zoom
+     and one-finger rotate without the browser intercepting the gesture. */
   touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 /* Home view setting overlay */

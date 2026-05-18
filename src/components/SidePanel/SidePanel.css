@@ -50,6 +50,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Browser must let our JS pointermove handler take over instead of
+     panning the page (which is locked anyway, but iOS still tries). */
+  touch-action: none;
+  -webkit-touch-callout: none;
 }
 
 .side-panel-handle-bar {
@@ -74,6 +78,8 @@
     border-right: none;
     border-top: var(--panel-border-width) solid color-mix(in srgb, var(--panel-border) 30%, transparent);
     flex-direction: column;
+    /* Respect the iOS home-indicator inset so panel content isn't clipped. */
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   .side-panel-handle {
@@ -81,14 +87,24 @@
     top: -6px;
     left: 0;
     right: auto;
+    /* Larger hit area for thumbs — keep visuals via the inner bar. */
     width: 100%;
-    height: 12px;
+    height: 24px;
     cursor: row-resize;
   }
 
   .side-panel-handle-bar {
     width: 40px;
-    height: 3px;
+    height: 4px;
+  }
+
+  /* Bump action buttons to iOS-recommended 44px tap target. */
+  .side-panel-settings-btn,
+  .side-panel-exit-sim-btn,
+  .side-panel-add-btn,
+  .side-panel-done-btn {
+    min-height: 44px;
+    font-size: 12px;
   }
 }
 

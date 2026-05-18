@@ -207,3 +207,61 @@ remain unmodified — easier to merge with parallel phase work.
 Build clean (`npm run build -- --mode addon`). Standalone
 https://192.168.1.10:8443/ keeps full chrome; `?embed=1` and the
 HA iframe path both hide it.
+
+## Phase Mobile — responsive layout + touch (2026-05-18)
+
+**Shipped.** Fixes the "doesn't pull up on mobile" report by ironing
+out the iOS Safari + HA Companion App gotchas. No JS/TSX changes
+needed — viewport meta was already in `index.html`
+(`width=device-width, initial-scale=1.0, viewport-fit=cover`),
+`SceneManager.createScene` already caps `setHardwareScalingLevel(1/
+min(devicePixelRatio, 2))` to keep HiDPI cost sane, the dashboard
+already flips to flex-column under 768px with the canvas on top and
+the side panel as a bottom sheet, and Babylon's `ArcRotateCamera`
+already gets `attachControl(canvas, true)` with pinch + drag.
+
+**What was actually broken (CSS-only fixes)**:
+- `src/App.css` — `body` was `width: 100vw; height: 100vh; overflow:
+  hidden;` but lacked `position: fixed`, so iOS rubber-band scroll
+  could drag the page out from under the canvas on first load. Now
+  pinned via `position: fixed; inset 0; overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent`. `#root` uses `100dvh`
+  with `100%` fallback (and `html { height: -webkit-fill-available }`
+  for old iOS Safari) so the layout sizes to the visible viewport
+  when the URL bar collapses/expands.
+- `src/pages/Dashboard/Dashboard.css` — canvas already had
+  `touch-action: none`; added `user-select: none` and
+  `-webkit-touch-callout: none` to suppress iOS magnifier / callout
+  on long-press, which was eating ArcRotateCamera drag gestures.
+- `src/components/SidePanel/SidePanel.css` — added `touch-action:
+  none` to the resize handle (otherwise iOS tried to scroll the
+  locked page instead of letting React's pointer handler resize the
+  panel), bumped mobile handle hit area to 24px, bumped action
+  buttons (Settings / Add Card / Done / Exit Simulation) to a 44px
+  iOS-recommended tap target, and added
+  `padding-bottom: env(safe-area-inset-bottom)` so the home indicator
+  doesn't clip controls.
+- `src/components/HUD.css` — replaced fixed 8/16/18px top/left/right
+  values with `max(N, env(safe-area-inset-*))` on mobile so the
+  title bar, clock, and corner brackets clear the notch on iPhone X
+  and newer.
+- `src/components/FormPanel/FormPanel.css` — the 450px right drawer
+  pushed off-screen on a 414px iPhone. Now becomes a bottom sheet
+  under 768px (`top: auto; right: 0; left: 0; bottom: 0; width:
+  100%; max-height: 80dvh; transform: translateY(100%)` slides up
+  from the bottom) with a 44px close button and safe-area padding.
+
+**Build**: `npm run build -- --mode addon` clean. No TS errors.
+
+**Service worker note**: `vite-plugin-pwa` with `registerType: 'autoUpdate'`
++ `registerSW({ immediate: true })` should self-update on next load.
+If a user's iPhone has an aggressively-cached pre-fix SW they may need
+to force-reload once (PWA install screen → remove, or in Safari:
+Settings → Safari → Advanced → Website Data → remove
+192.168.1.10). Not blocking; logged here for follow-up.
+
+**Verification**: Desktop layout unchanged (all mobile rules gated
+`@media (max-width: 768px)`). Mobile breakpoints fire under iPhone
+sizes (Chrome DevTools device toolbar @ 414×896 confirms the side
+panel renders as a bottom sheet, HUD respects safe-area, and the
+canvas fills the remaining viewport).
