@@ -187,3 +187,23 @@ weighted-centroid filter to do case-insensitive floor compare, require
 all anchors-with-distance when the same-floor count is too thin so the
 orb still drifts), slowed the poll from 3 s to 5 s per the Phase B spec,
 and added a one-line debug log per poll. Build clean.
+
+## Phase UI — HA-embed-friendly chrome (2026-05-18)
+
+**Shipped.** When 3Dash is iframed in HA Lovelace OR loaded with
+`?embed=1`, the standalone app chrome (top "3Dash · Live View" banner,
+clock/date, four HUD corners) is hidden and the prominent "Settings"
+row in the side panel collapses to a small low-opacity floating
+button in the bottom-right (functionality preserved — power users can
+still hit it, or use `?embed=0` to force the full UI).
+
+Detection is `src/utils/embedMode.ts::isEmbedded()`: tries
+`window !== window.top` (cross-origin throws → also treated as
+iframed), respects `?embed=0`/`?embed=1` overrides. App.tsx applies
+the `body.embedded` class on mount via `applyEmbedBodyClass()`. All
+visual hiding is CSS-only in `App.css` so HUD.tsx / SidePanel.tsx
+remain unmodified — easier to merge with parallel phase work.
+
+Build clean (`npm run build -- --mode addon`). Standalone
+https://192.168.1.10:8443/ keeps full chrome; `?embed=1` and the
+HA iframe path both hide it.
