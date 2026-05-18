@@ -110,11 +110,23 @@ export function createScene(
   // Render loop
   engine.runRenderLoop(() => scene.render());
 
+  // Re-fit the engine framebuffer when the viewport changes. iOS Safari fires
+  // both events independently — `resize` covers URL-bar collapse/expand and
+  // desktop window resizes, `orientationchange` covers device rotation where
+  // the new viewport dimensions aren't always reflected in the first resize.
+  // A trailing rAF nudge after orientationchange lets the layout settle before
+  // engine.resize() reads the canvas client size.
   const onResize = () => engine.resize();
+  const onOrientationChange = () => {
+    engine.resize();
+    requestAnimationFrame(() => engine.resize());
+  };
   window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', onOrientationChange);
 
   function dispose() {
     window.removeEventListener('resize', onResize);
+    window.removeEventListener('orientationchange', onOrientationChange);
     engine.stopRenderLoop();
     scene.dispose();
     engine.dispose();
