@@ -157,3 +157,33 @@ pushed to `origin/dev`. Portainer stack 157 redeploy returned HTTP 200.
   smoothed `hist_distance_by_interval` mean for steadier orbs.
 
 
+
+## Phase B — Fix-up: restore bermudaApi service (2026-05-18)
+
+**Shipped.** Commit `7b17def` on `dev`, pushed to origin. The Phase B
+commit (`6f2d761`) imported from `src/services/bermudaApi.ts` in
+Dashboard.tsx but never committed the file itself, leaving origin/dev's
+build broken (`npm run build -- --mode addon` failed module resolution).
+Restored the missing service module as a properly typed wrapper around
+the WS `call_service bermuda.dump_devices` (`return_response: true`)
+call. Exports `dumpBermudaDevices()`, `parseBermudaDump()`, and
+`findTrackerEntityForBermuda()`.
+
+**Bermuda data shape (verified live against ha.shuehome.net)**: the
+service response is keyed by device address — IRK (32-hex) for
+phones-via-private_ble_device, real MAC for ESPHome scanners (anchors
+where `_is_scanner === true`). Per-tracker per-scanner distance lives
+in `device.adverts[<sourceMac>__<scannerMac>]` with `rssi_distance`
+(Kalman-filtered, preferred) falling back to `rssi_distance_raw`. A
+single phone IRK emits adverts through several rotating source MACs
+(metadevice_sources); we aggregate per scanner by min distance. Each
+tracker also carries `floor_name` ("Main" / "Upper") and `area_name`,
+duplicating `sensor.<phone>_floor` and `sensor.<phone>_area`.
+
+**Dashboard cleanup** in the same commit: dropped the in-file
+`BermudaAdvert` / `BermudaDevice` scaffold types, tightened the
+weighted-centroid filter to do case-insensitive floor compare, require
+≥ 2 same-floor anchors with distance before filtering (falls back to
+all anchors-with-distance when the same-floor count is too thin so the
+orb still drifts), slowed the poll from 3 s to 5 s per the Phase B spec,
+and added a one-line debug log per poll. Build clean.
