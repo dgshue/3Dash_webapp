@@ -86,6 +86,25 @@ export interface TrackerConfig {
   areaPositions: Record<string, LightPosition>;
   /** Hide the sphere when device_tracker state == "not_home" (default true). */
   hideWhenAway?: boolean;
+  /** Phase B: Optional map of anchor deviceId → HA entity ID that reports
+   *  distance to that anchor. When empty/undefined, the tracker uses only
+   *  area-snap positioning (Phase A behavior). */
+  distanceEntities?: Record<string, string>;
+}
+
+// --- BLE Anchors (Bermuda ESPHome scanners) ---
+
+export interface AnchorConfig {
+  /** Stable identifier — typically the Bermuda device address (e.g. MAC)
+   *  or HA device_id of the ESPHome anchor. Used as the lookup key in
+   *  TrackerConfig.distanceEntities. */
+  deviceId: string;
+  label: string;
+  position: LightPosition;
+  /** "Main" / "Upper" / etc. — matches sensor.<phone>_floor state.
+   *  When a phone's floor is known, the weighted centroid filters anchors
+   *  by this field. Unknown floor → all anchors used. */
+  floor: string;
 }
 
 // --- Shadow Walls (invisible roof / sun blockers) ---
@@ -179,6 +198,7 @@ export interface AppConfig {
   sidePanel?: SidePanelConfig;
   tubes?: TubeConfig[];
   trackers?: TrackerConfig[];
+  anchors?: AnchorConfig[];
   onboarding?: OnboardingState;
 }
 
@@ -201,6 +221,7 @@ export interface FullConfig {
   sidePanel?: SidePanelConfig;
   tubes?: TubeConfig[];
   trackers?: TrackerConfig[];
+  anchors?: AnchorConfig[];
   onboarding?: OnboardingState;
 }
 

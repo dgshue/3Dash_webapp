@@ -44,6 +44,17 @@ import {
   targetForArea,
   type TrackerMeshMap,
 } from '../../babylon/TrackerMeshFactory';
+import {
+  createAnchorMesh,
+  disposeAllAnchors,
+  type AnchorMeshMap,
+} from '../../babylon/AnchorMeshFactory';
+import {
+  dumpBermudaDevices,
+  parseBermudaDump,
+  findTrackerEntityForBermuda,
+  type ParsedBermudaTracker,
+} from '../../services/bermudaApi';
 import HUD from '../../components/HUD';
 import LightModal from '../../components/LightModal';
 import RemoteModal from '../../components/RemoteModal';
@@ -55,10 +66,23 @@ import GuidedTour from '../../components/GuidedTour/GuidedTour';
 import { dashboardTourSteps } from '../../components/GuidedTour/tourSteps';
 import CardPropertiesPanel from '../../components/SidePanel/CardPropertiesPanel';
 import { SIMULATION_CONFIG, SIMULATION_MODEL_URL } from '../../data/simulationData';
-import type { AppConfig, DisplayConfig, LightConfig, RemoteButton, HAState, CardLayout, SidePanelCard, TrackerConfig } from '../../types';
+import type { AppConfig, DisplayConfig, LightConfig, RemoteButton, HAState, CardLayout, SidePanelCard, TrackerConfig, AnchorConfig } from '../../types';
 import './Dashboard.css';
 
 const LONG_PRESS_MS = 500;
+
+/** Subset of the Bermuda dump_devices service response we consume. */
+interface BermudaAdvert {
+  rssi_distance_raw?: number;
+  rssi?: number;
+}
+interface BermudaDevice {
+  name?: string;
+  address?: string;
+  floor_name?: string;
+  area_name?: string;
+  adverts?: Record<string, BermudaAdvert>;
+}
 
 export default function Dashboard() {
   const { demoMode } = useDemoMode();
@@ -72,8 +96,17 @@ export default function Dashboard() {
   const displayMeshMapRef = useRef<DisplayMeshMap>({});
   const tubeMapRef = useRef<TubeMap>({});
   const trackerMapRef = useRef<TrackerMeshMap>({});
+  const anchorMapRef = useRef<AnchorMeshMap>({});
   /** areaEntityId -> trackerEntityId, for routing area-sensor state changes. */
   const trackerAreaToEntityRef = useRef<Record<string, string>>({});
+  /** Phase B: per-tracker live distances {trackerEntityId: {anchorDeviceId: meters}}. */
+  const trackerDistancesRef = useRef<Record<string, Record<string, number>>>({});
+  /** Phase B: per-tracker last-known floor (from sensor.<phone>_floor). */
+  const trackerFloorRef = useRef<Record<string, string>>({});
+  /** Phase B: 5 Hz throttle map (trackerEntityId -> last update ms). */
+  const trackerLastUpdateRef = useRef<Record<string, number>>({});
+  /** Phase B: dump_devices polling timer. */
+  const bermudaPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const haRef = useRef<HALike | null>(null);
   const configRef = useRef<AppConfig | null>(null);
   const lastStatesRef = useRef<Record<string, HAState>>({});
@@ -828,13 +861,43 @@ export default function Dashboard() {
           tubeMapRef.current[tc.id] = createTubeMeshes(ctx.scene, tc, ctx.glowLayer);
         }
 
+        // Phase B: backfill upstairs room defaults on existing tracker configs.
+        // Phase A only seeded downstairs rooms for users whose trackers were
+        // auto-discovered before the multi-floor update. Add upstairs keys
+        // if they're missing, then persist.
+        const UPSTAIRS_DEFAULTS: Record<string, { x: number; y: number; z: number }> = {
+          master_bedroom: { x: -3, y: 4.0, z: -2 },
+          greysons_room: { x: 2, y: 4.0, z: -2 },
+          keeks_bedroom: { x: 2, y: 4.0, z: 2 },
+        };
+        let backfilled = false;
+        const trackerConfigs = (config.trackers || []).map((tc) => {
+          const ap = { ...(tc.areaPositions || {}) };
+          let changed = false;
+          for (const [k, v] of Object.entries(UPSTAIRS_DEFAULTS)) {
+            if (!ap[k]) { ap[k] = v; changed = true; }
+          }
+          if (changed) { backfilled = true; return { ...tc, areaPositions: ap }; }
+          return tc;
+        });
+        if (backfilled) {
+          configRef.current = { ...(configRef.current as AppConfig), trackers: trackerConfigs };
+          try { updateConfig({ trackers: trackerConfigs }); } catch { /* best-effort */ }
+          console.info('[3Dash][tracker] backfilled upstairs defaults on existing tracker configs');
+        }
+
         // Create BLE tracker meshes (moving dots for tracked phones/watches)
-        const trackerConfigs = config.trackers || [];
         for (const tc of trackerConfigs) {
           trackerMapRef.current[tc.entityId] = createTrackerMesh(ctx.scene, tc);
           if (tc.areaEntityId) {
             trackerAreaToEntityRef.current[tc.areaEntityId] = tc.entityId;
           }
+        }
+
+        // Phase B: render anchors as static pin markers
+        const anchorConfigs = config.anchors || [];
+        for (const ac of anchorConfigs) {
+          anchorMapRef.current[ac.deviceId] = createAnchorMesh(ctx.scene, ac);
         }
 
         // Weather effects (rain/snow particles + cloud cover)
@@ -1016,7 +1079,9 @@ export default function Dashboard() {
       );
       disposeAllTubes(tubeMapRef.current);
       disposeAllTrackers(trackerMapRef.current);
+      disposeAllAnchors(anchorMapRef.current);
       trackerAreaToEntityRef.current = {};
+      if (bermudaPollTimerRef.current) { clearInterval(bermudaPollTimerRef.current); bermudaPollTimerRef.current = null; }
       if (weatherIntervalRef) clearInterval(weatherIntervalRef);
       weatherRef.current?.dispose();
       weatherRef.current = null;
@@ -1153,6 +1218,14 @@ export default function Dashboard() {
             animateTrackerTo(sceneCtxRef.current.scene, entry, target);
           }
         }
+        // Phase B: sensor.<phone>_floor changed → cache for centroid filter
+        if (entityId.startsWith('sensor.') && entityId.endsWith('_floor')) {
+          const slug = entityId.replace(/^sensor\./, '').replace(/_floor$/, '');
+          const tEntityId = `device_tracker.${slug}`;
+          if (trackerMapRef.current[tEntityId]) {
+            trackerFloorRef.current[tEntityId] = state.state;
+          }
+        }
 
         if (entityId === modalEntityIdRef.current) setModalState(state);
         if (entityId === modalDoubleTapEntityIdRef.current) setModalDoubleTapState(state);
@@ -1284,9 +1357,140 @@ export default function Dashboard() {
       haRef.current = ha;
       setActiveHAConnection(ha);
       ha.connect();
+
+      // Phase B: poll bermuda.dump_devices for per-anchor distances + anchor
+      // auto-discovery. Bermuda doesn't expose per-anchor distance as HA
+      // entities (verified 2026-05-18); the only path is this service call.
+      const pollBermuda = async () => {
+        if (!ha.isConnected) return;
+        try {
+          const result = await ha.request({
+            type: 'call_service',
+            domain: 'bermuda',
+            service: 'dump_devices',
+            return_response: true,
+          }) as { response?: Record<string, BermudaDevice> } | undefined;
+          const dump = result?.response ?? {};
+
+          // Auto-discover anchors if none are configured yet
+          if (!(configRef.current?.anchors && configRef.current.anchors.length)) {
+            const discovered: AnchorConfig[] = [];
+            let stackOffset = 0;
+            for (const [addr, dev] of Object.entries(dump)) {
+              const name = (dev.name || '').toString();
+              if (!/anchor/i.test(name)) continue;
+              const floor = (dev.floor_name as string) || 'Main';
+              const x = (stackOffset % 3) * 0.4 - 0.4;
+              const z = Math.floor(stackOffset / 3) * 0.4;
+              discovered.push({
+                deviceId: addr,
+                label: name,
+                position: { x, y: floor === 'Main' ? 1.5 : 4.0, z },
+                floor,
+              });
+              stackOffset++;
+            }
+            if (discovered.length > 0) {
+              console.info(`[3Dash][anchor] auto-discovered ${discovered.length} anchors from bermuda.dump_devices`);
+              configRef.current = { ...(configRef.current as AppConfig), anchors: discovered };
+              try { updateConfig({ anchors: discovered }); } catch { /* best-effort */ }
+              const scene2 = sceneCtxRef.current?.scene;
+              if (scene2) {
+                for (const a of discovered) {
+                  anchorMapRef.current[a.deviceId] = createAnchorMesh(scene2, a);
+                }
+              }
+            }
+          }
+
+          const trackers = configRef.current?.trackers || [];
+          const anchors = configRef.current?.anchors || [];
+          if (!trackers.length || !anchors.length) return;
+
+          const anchorByDevice: Record<string, AnchorConfig> = {};
+          for (const a of anchors) anchorByDevice[a.deviceId] = a;
+
+          for (const tc of trackers) {
+            const labelLower = (tc.label || '').toLowerCase();
+            let phoneEntry: BermudaDevice | undefined;
+            for (const dev of Object.values(dump)) {
+              const nm = (dev.name || '').toString().toLowerCase();
+              if (nm && labelLower && (nm === labelLower || nm.includes(labelLower) || labelLower.includes(nm))) {
+                phoneEntry = dev;
+                break;
+              }
+            }
+            if (!phoneEntry?.adverts) continue;
+
+            const distances: Record<string, number> = {};
+            for (const [advKey, adv] of Object.entries(phoneEntry.adverts)) {
+              const parts = advKey.split('__');
+              const scannerAddr = parts[0];
+              if (!scannerAddr || !anchorByDevice[scannerAddr]) continue;
+              const d = (adv as BermudaAdvert).rssi_distance_raw;
+              if (typeof d === 'number' && isFinite(d) && d > 0) {
+                distances[scannerAddr] = d;
+              }
+            }
+            trackerDistancesRef.current[tc.entityId] = distances;
+            if (phoneEntry.floor_name) {
+              trackerFloorRef.current[tc.entityId] = phoneEntry.floor_name as string;
+            }
+
+            const now = Date.now();
+            const last = trackerLastUpdateRef.current[tc.entityId] || 0;
+            if (now - last < 200) continue;
+
+            const phoneFloor = trackerFloorRef.current[tc.entityId];
+            const eligible = anchors.filter((a) => {
+              if (!phoneFloor || phoneFloor === 'unknown' || phoneFloor === 'unavailable') return true;
+              return a.floor === phoneFloor;
+            });
+            const useAnchors = eligible.length >= 2 ? eligible : anchors;
+
+            let totalW = 0;
+            let sx = 0, sy = 0, sz = 0;
+            let matched = 0;
+            for (const a of useAnchors) {
+              const d = distances[a.deviceId];
+              if (typeof d !== 'number') continue;
+              const w = 1 / Math.max(d, 0.5);
+              totalW += w;
+              sx += a.position.x * w;
+              sy += a.position.y * w;
+              sz += a.position.z * w;
+              matched++;
+            }
+            if (matched < 1 || totalW <= 0) continue;
+            const pos = { x: sx / totalW, y: sy / totalW, z: sz / totalW };
+
+            const entry = trackerMapRef.current[tc.entityId];
+            const scene3 = sceneCtxRef.current?.scene;
+            if (entry && scene3) {
+              trackerLastUpdateRef.current[tc.entityId] = now;
+              animateTrackerTo(scene3, entry, pos);
+            }
+          }
+        } catch (err) {
+          console.warn('[3Dash][bermuda] dump_devices poll failed:', err);
+        }
+      };
+      const startTimer = setTimeout(() => {
+        pollBermuda();
+        bermudaPollTimerRef.current = setInterval(pollBermuda, 3000);
+      }, 2000);
+      (ha as unknown as { __bermudaDispose?: () => void }).__bermudaDispose = () => {
+        clearTimeout(startTimer);
+        if (bermudaPollTimerRef.current) {
+          clearInterval(bermudaPollTimerRef.current);
+          bermudaPollTimerRef.current = null;
+        }
+      };
     }
 
     return () => {
+      const ha = haRef.current as unknown as { __bermudaDispose?: () => void } | null;
+      ha?.__bermudaDispose?.();
       haRef.current?.dispose();
       haRef.current = null;
       setActiveHAConnection(null);

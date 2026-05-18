@@ -47,15 +47,23 @@ import TubeForm, { type TubePreviewInfo } from '../../components/TubeForm';
 import { createTubeMeshes, removeTubeMeshes, disposeAllTubes, renderMockupLabels, type TubeMap } from '../../babylon/TubeMeshFactory';
 import TrackerList from '../../components/TrackerList';
 import TrackerForm from '../../components/TrackerForm';
+import AnchorList from '../../components/AnchorList';
+import AnchorForm from '../../components/AnchorForm';
 import {
   createTrackerMesh,
   removeTrackerMesh,
   disposeAllTrackers,
   type TrackerMeshMap,
 } from '../../babylon/TrackerMeshFactory';
+import {
+  createAnchorMesh,
+  removeAnchorMesh,
+  disposeAllAnchors,
+  type AnchorMeshMap,
+} from '../../babylon/AnchorMeshFactory';
 import GuidedTour from '../../components/GuidedTour/GuidedTour';
 import { editorTourSteps } from '../../components/GuidedTour/tourSteps';
-import type { LightConfig, LightGroup, DisplayConfig, ShadowWallConfig, TubeConfig, TrackerConfig, LightPosition, HAState } from '../../types';
+import type { LightConfig, LightGroup, DisplayConfig, ShadowWallConfig, TubeConfig, TrackerConfig, AnchorConfig, LightPosition, HAState } from '../../types';
 import './ConfigEditor.css';
 
 export default function ConfigEditor() {
@@ -94,7 +102,7 @@ export default function ConfigEditor() {
   const [toastVisible, setToastVisible] = useState(false);
 
   // Editor mode: lights, displays, walls, tubes, or trackers
-  const [editorMode, setEditorMode] = useState<'lights' | 'displays' | 'walls' | 'tubes' | 'trackers'>('lights');
+  const [editorMode, setEditorMode] = useState<'lights' | 'displays' | 'walls' | 'tubes' | 'trackers' | 'anchors'>('lights');
 
   // Load HA entity list for autocomplete in forms (cache-first, else fetch fresh).
   useEffect(() => {
@@ -170,6 +178,16 @@ export default function ConfigEditor() {
   const [trackerPickRowIdx, setTrackerPickRowIdx] = useState<number | null>(-1);
   const trackerPickRowIdxRef = useRef(trackerPickRowIdx);
   trackerPickRowIdxRef.current = trackerPickRowIdx;
+
+  // Anchor state
+  const anchorMeshMapRef = useRef<AnchorMeshMap>({});
+  const [anchors, setAnchors] = useState<AnchorConfig[]>([]);
+  const [anchorEditIdx, setAnchorEditIdx] = useState<number | null>(null);
+  const [anchorPanelOpen, setAnchorPanelOpen] = useState(false);
+  const anchorPanelOpenRef = useRef(anchorPanelOpen);
+  anchorPanelOpenRef.current = anchorPanelOpen;
+  const anchorsRef = useRef(anchors);
+  anchorsRef.current = anchors;
 
   // Current preview shape/size from LightForm
   const previewInfoRef = useRef<PreviewInfo>({ shape: 'sphere', size: { diameter: 0.25 } });
@@ -505,6 +523,8 @@ export default function ConfigEditor() {
         tubesRef.current = config.tubes || [];
         setTrackers(config.trackers || []);
         trackersRef.current = config.trackers || [];
+        setAnchors(config.anchors || []);
+        anchorsRef.current = config.anchors || [];
 
         // Load model from IndexedDB
         const modelBlob = await getModelBlob();
@@ -611,6 +631,15 @@ export default function ConfigEditor() {
           };
           setPosition(newPos);
           positionRef.current = newPos;
+        } else if (anchorPanelOpenRef.current) {
+          // Anchor placing mode: same multi-floor behavior as trackers.
+          const newPos: LightPosition = {
+            x: parseFloat(p.x.toFixed(3)),
+            y: parseFloat(p.y.toFixed(3)),
+            z: parseFloat(p.z.toFixed(3)),
+          };
+          setPosition(newPos);
+          positionRef.current = newPos;
         } else {
           // Light placing mode: offset Y slightly
           const newPos: LightPosition = {
@@ -671,7 +700,7 @@ export default function ConfigEditor() {
         return;
       }
       // Skip click-to-edit when already editing a display, wall, or tube
-      if (displayPanelOpenRef.current || wallPanelOpenRef.current || tubePanelOpenRef.current) return;
+      if (displayPanelOpenRef.current || wallPanelOpenRef.current || tubePanelOpenRef.current || trackerPanelOpenRef.current || anchorPanelOpenRef.current) return;
 
       // Pick under pointer
       const pick = ctx.scene.pick(evt.offsetX, evt.offsetY);
@@ -716,6 +745,7 @@ export default function ConfigEditor() {
         removeDisplayMesh(displayMeshMapRef.current, id),
       );
       disposeAllTubes(tubeMeshMapRef.current);
+      disposeAllAnchors(anchorMeshMapRef.current);
       clearPreview();
       for (const m of wallEditorMeshesRef.current) m.dispose();
       wallEditorMeshesRef.current = [];
@@ -1915,15 +1945,156 @@ export default function ConfigEditor() {
     }
   }, [editorMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Anchor handlers ────────────────────────────────────────────
+
+  const rebuildAnchorEditorMeshes = useCallback((anchorConfigs: AnchorConfig[]) => {
+    const scene = sceneCtxRef.current?.scene;
+    if (!scene) return;
+    disposeAllAnchors(anchorMeshMapRef.current);
+    for (const ac of anchorConfigs) {
+      anchorMeshMapRef.current[ac.deviceId] = createAnchorMesh(scene, ac);
+    }
+  }, []);
+
+  const handleAddAnchor = useCallback(() => {
+    setAnchorEditIdx(null);
+    setPosition({ x: 0, y: 1.5, z: 0 });
+    posUndoStackRef.current = [];
+    setAnchorPanelOpen(true);
+  }, []);
+
+  const handleEditAnchor = useCallback(
+    (idx: number) => {
+      const cfg = anchors[idx];
+      if (!cfg) return;
+      setAnchorEditIdx(idx);
+      setPosition({ x: cfg.position.x, y: cfg.position.y, z: cfg.position.z });
+      posUndoStackRef.current = [];
+      setAnchorPanelOpen(true);
+    },
+    [anchors],
+  );
+
+  const handleDeleteAnchor = useCallback(
+    async (idx: number) => {
+      const deleted = anchors[idx];
+      if (deleted) removeAnchorMesh(anchorMeshMapRef.current, deleted.deviceId);
+      const updated = anchors.filter((_, i) => i !== idx);
+      setAnchors(updated);
+      try {
+        await updateConfig({ anchors: updated });
+        showToast('Anchor deleted & synced to server');
+      } catch (e) {
+        console.error('[Config] Auto-save failed:', e);
+        showToast('Anchor deleted locally (server sync failed)');
+      }
+    },
+    [anchors, showToast],
+  );
+
+  const handleDuplicateAnchor = useCallback(
+    async (idx: number) => {
+      const src = anchors[idx];
+      if (!src) return;
+      let copyId = `${src.deviceId}_copy`;
+      const taken = new Set(anchors.map((a) => a.deviceId));
+      let n = 2;
+      while (taken.has(copyId)) {
+        copyId = `${src.deviceId}_copy${n++}`;
+      }
+      const copy: AnchorConfig = {
+        ...src,
+        deviceId: copyId,
+        label: (src.label || 'Anchor') + ' (copy)',
+        position: { x: src.position.x + 0.5, y: src.position.y, z: src.position.z },
+      };
+      const updated = [...anchors, copy];
+      setAnchors(updated);
+      const scene = sceneCtxRef.current?.scene;
+      if (scene) {
+        anchorMeshMapRef.current[copy.deviceId] = createAnchorMesh(scene, copy);
+      }
+      try {
+        await updateConfig({ anchors: updated });
+        showToast('Anchor duplicated & synced to server');
+      } catch (e) {
+        console.error('[Config] Auto-save failed:', e);
+        showToast('Anchor duplicated locally (server sync failed)');
+      }
+    },
+    [anchors, showToast],
+  );
+
+  const handleCloseAnchorPanel = useCallback(() => {
+    setAnchorPanelOpen(false);
+    setAnchorEditIdx(null);
+    if (placingModeRef.current) {
+      exitPlacingMode();
+    }
+  }, [exitPlacingMode]);
+
+  const handleEnterAnchorPickMode = useCallback(() => {
+    enterPlacingMode();
+  }, [enterPlacingMode]);
+
+  const handleExitAnchorPickMode = useCallback(() => {
+    exitPlacingMode();
+  }, [exitPlacingMode]);
+
+  const handleSaveAnchor = useCallback(
+    async (cfg: AnchorConfig) => {
+      let updated: AnchorConfig[];
+      if (anchorEditIdx !== null) {
+        const oldId = anchors[anchorEditIdx]?.deviceId;
+        if (oldId && oldId !== cfg.deviceId) {
+          removeAnchorMesh(anchorMeshMapRef.current, oldId);
+        }
+        updated = anchors.map((a, i) => (i === anchorEditIdx ? cfg : a));
+      } else {
+        if (anchors.some((a) => a.deviceId === cfg.deviceId)) {
+          alert(`An anchor with device ID "${cfg.deviceId}" already exists.`);
+          return;
+        }
+        updated = [...anchors, cfg];
+      }
+      setAnchors(updated);
+      setAnchorPanelOpen(false);
+      setAnchorEditIdx(null);
+
+      const scene = sceneCtxRef.current?.scene;
+      if (scene) {
+        removeAnchorMesh(anchorMeshMapRef.current, cfg.deviceId);
+        anchorMeshMapRef.current[cfg.deviceId] = createAnchorMesh(scene, cfg);
+      }
+
+      try {
+        await updateConfig({ anchors: updated });
+        showToast('Anchor saved & synced to server');
+      } catch (e) {
+        console.error('[Config] Auto-save failed:', e);
+        showToast('Anchor saved locally (server sync failed)');
+      }
+    },
+    [anchors, anchorEditIdx, showToast],
+  );
+
+  useEffect(() => {
+    if (editorMode === 'anchors') {
+      rebuildAnchorEditorMeshes(anchorsRef.current);
+    } else {
+      disposeAllAnchors(anchorMeshMapRef.current);
+    }
+  }, [editorMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Save config to server
   const handleSaveConfig = useCallback(async () => {
     try {
-      await updateConfig({ lights, lightGroups, displays, shadowWalls, tubes, trackers });
-      showToast(`Saved ${lights.length} lights + ${displays.length} displays + ${shadowWalls.length} walls + ${tubes.length} tubes + ${trackers.length} trackers to server`);
+      await updateConfig({ lights, lightGroups, displays, shadowWalls, tubes, trackers, anchors });
+      showToast(`Saved ${lights.length} lights + ${displays.length} displays + ${shadowWalls.length} walls + ${tubes.length} tubes + ${trackers.length} trackers + ${anchors.length} anchors to server`);
     } catch (e) {
       alert('Failed to save config: ' + (e instanceof Error ? e.message : e));
     }
-  }, [lights, lightGroups, displays, shadowWalls, tubes, trackers, showToast]);
+  }, [lights, lightGroups, displays, shadowWalls, tubes, trackers, anchors, showToast]);
 
   // Load config from server
   const handleLoadConfig = useCallback(async () => {
@@ -1937,6 +2108,8 @@ export default function ConfigEditor() {
       tubesRef.current = config.tubes || [];
       setTrackers(config.trackers || []);
       trackersRef.current = config.trackers || [];
+      setAnchors(config.anchors || []);
+      anchorsRef.current = config.anchors || [];
       const scene = sceneCtxRef.current?.scene;
       if (scene) {
         rebuildAllMeshes(scene, meshMapRef.current, config.lights || []);
@@ -2006,6 +2179,13 @@ export default function ConfigEditor() {
           >
             Trackers ({trackers.length})
           </button>
+          <button
+            className={`editor-tab${editorMode === 'anchors' ? ' active' : ''}`}
+            data-tab="anchors"
+            onClick={() => setEditorMode('anchors')}
+          >
+            Anchors ({anchors.length})
+          </button>
         </div>
 
         <div className="light-list">
@@ -2047,13 +2227,21 @@ export default function ConfigEditor() {
               onDelete={handleDeleteTube}
               onDuplicate={handleDuplicateTube}
             />
-          ) : (
+          ) : editorMode === 'trackers' ? (
             <TrackerList
               trackers={trackers}
               selectedIdx={trackerEditIdx}
               onSelect={handleEditTracker}
               onDelete={handleDeleteTracker}
               onDuplicate={handleDuplicateTracker}
+            />
+          ) : (
+            <AnchorList
+              anchors={anchors}
+              selectedIdx={anchorEditIdx}
+              onSelect={handleEditAnchor}
+              onDelete={handleDeleteAnchor}
+              onDuplicate={handleDuplicateAnchor}
             />
           )}
         </div>
@@ -2075,9 +2263,13 @@ export default function ConfigEditor() {
             <button className="btn btn-primary editor-add-btn" onClick={handleAddTube}>
               + Add Tube
             </button>
-          ) : (
+          ) : editorMode === 'trackers' ? (
             <button className="btn btn-primary editor-add-btn" onClick={handleAddTracker}>
               + Add Tracker
+            </button>
+          ) : (
+            <button className="btn btn-primary editor-add-btn" onClick={handleAddAnchor}>
+              + Add Anchor
             </button>
           )}
           <button className="btn btn-ghost" onClick={handleLoadConfig}>
@@ -2101,7 +2293,9 @@ export default function ConfigEditor() {
                 ? (trackerPickRowIdx === null
                     ? 'Click anywhere on the model to set tracker default position'
                     : `Click to set room position (click upstairs floor for upstairs y)`)
-                : 'Click on the model to place light'}
+                : anchorPanelOpen
+                  ? 'Click on the model to place anchor (pick upstairs floor for upstairs y)'
+                  : 'Click on the model to place light'}
         </div>
         <div className="coord-readout">{coordText}</div>
         <div className={`toast${toastVisible ? ' show' : ''}`}>{toastMsg}</div>
@@ -2172,6 +2366,18 @@ export default function ConfigEditor() {
           pickingRowIdx={trackerPickRowIdx}
           placingMode={placingMode}
           haEntities={haEntities}
+        />
+
+        <AnchorForm
+          open={anchorPanelOpen}
+          editAnchor={anchorEditIdx !== null ? anchors[anchorEditIdx] : null}
+          position={position}
+          onPositionChange={handlePositionChange}
+          onSave={handleSaveAnchor}
+          onClose={handleCloseAnchorPanel}
+          onEnterPickMode={handleEnterAnchorPickMode}
+          onExitPickMode={handleExitAnchorPickMode}
+          placingMode={placingMode}
         />
       </div>
 
