@@ -53,7 +53,6 @@ import {
   dumpBermudaDevices,
   parseBermudaDump,
   findTrackerEntityForBermuda,
-  type ParsedBermudaTracker,
 } from '../../services/bermudaApi';
 import HUD from '../../components/HUD';
 import LightModal from '../../components/LightModal';
@@ -70,19 +69,6 @@ import type { AppConfig, DisplayConfig, LightConfig, RemoteButton, HAState, Card
 import './Dashboard.css';
 
 const LONG_PRESS_MS = 500;
-
-/** Subset of the Bermuda dump_devices service response we consume. */
-interface BermudaAdvert {
-  rssi_distance_raw?: number;
-  rssi?: number;
-}
-interface BermudaDevice {
-  name?: string;
-  address?: string;
-  floor_name?: string;
-  area_name?: string;
-  adverts?: Record<string, BermudaAdvert>;
-}
 
 export default function Dashboard() {
   const { demoMode } = useDemoMode();
@@ -1360,119 +1346,112 @@ export default function Dashboard() {
 
       // Phase B: poll bermuda.dump_devices for per-anchor distances + anchor
       // auto-discovery. Bermuda doesn't expose per-anchor distance as HA
-      // entities (verified 2026-05-18); the only path is this service call.
+      // entities (verified 2026-05-18 against ha.shuehome.net); the only
+      // path is the WS call_service bermuda.dump_devices with
+      // return_response: true. Parsing + helpers live in
+      // src/services/bermudaApi.ts.
+      let pollErrorCount = 0;
       const pollBermuda = async () => {
         if (!ha.isConnected) return;
-        try {
-          const result = await ha.request({
-            type: 'call_service',
-            domain: 'bermuda',
-            service: 'dump_devices',
-            return_response: true,
-          }) as { response?: Record<string, BermudaDevice> } | undefined;
-          const dump = result?.response ?? {};
+        const dump = await dumpBermudaDevices(ha);
+        if (!dump) { pollErrorCount++; if (pollErrorCount === 6) console.warn('[3Dash][bermuda] persistent dump failures'); return; }
+        pollErrorCount = 0;
+        const parsed = parseBermudaDump(dump);
 
-          // Auto-discover anchors if none are configured yet
-          if (!(configRef.current?.anchors && configRef.current.anchors.length)) {
-            const discovered: AnchorConfig[] = [];
-            let stackOffset = 0;
-            for (const [addr, dev] of Object.entries(dump)) {
-              const name = (dev.name || '').toString();
-              if (!/anchor/i.test(name)) continue;
-              const floor = (dev.floor_name as string) || 'Main';
-              const x = (stackOffset % 3) * 0.4 - 0.4;
-              const z = Math.floor(stackOffset / 3) * 0.4;
-              discovered.push({
-                deviceId: addr,
-                label: name,
-                position: { x, y: floor === 'Main' ? 1.5 : 4.0, z },
-                floor,
-              });
-              stackOffset++;
-            }
-            if (discovered.length > 0) {
-              console.info(`[3Dash][anchor] auto-discovered ${discovered.length} anchors from bermuda.dump_devices`);
-              configRef.current = { ...(configRef.current as AppConfig), anchors: discovered };
-              try { updateConfig({ anchors: discovered }); } catch { /* best-effort */ }
-              const scene2 = sceneCtxRef.current?.scene;
-              if (scene2) {
-                for (const a of discovered) {
-                  anchorMapRef.current[a.deviceId] = createAnchorMesh(scene2, a);
-                }
+        // Auto-discover anchors if none are configured yet (one-shot).
+        if (!(configRef.current?.anchors && configRef.current.anchors.length)
+            && parsed.anchors.length > 0) {
+          const discovered: AnchorConfig[] = parsed.anchors.map((a, i) => ({
+            deviceId: a.address,
+            label: a.name || a.address,
+            // Stack at origin so user can spot + click-to-place each one.
+            position: {
+              x: (i % 3) * 0.4 - 0.4,
+              y: a.floor === 'Main' ? 1.5 : 4.0,
+              z: Math.floor(i / 3) * 0.4,
+            },
+            floor: a.floor || 'Main',
+          }));
+          console.info(`[3Dash][anchor] auto-discovered ${discovered.length} anchors from bermuda.dump_devices`);
+          configRef.current = { ...(configRef.current as AppConfig), anchors: discovered };
+          try { updateConfig({ anchors: discovered }); } catch { /* best-effort */ }
+          const scene2 = sceneCtxRef.current?.scene;
+          if (scene2) {
+            for (const a of discovered) {
+              if (!anchorMapRef.current[a.deviceId]) {
+                anchorMapRef.current[a.deviceId] = createAnchorMesh(scene2, a);
               }
             }
           }
+        }
 
-          const trackers = configRef.current?.trackers || [];
-          const anchors = configRef.current?.anchors || [];
-          if (!trackers.length || !anchors.length) return;
+        const trackers = configRef.current?.trackers || [];
+        const anchors = configRef.current?.anchors || [];
+        if (!trackers.length || !anchors.length) return;
 
-          const anchorByDevice: Record<string, AnchorConfig> = {};
-          for (const a of anchors) anchorByDevice[a.deviceId] = a;
+        const trackerHandles = trackers.map((t) => ({ entityId: t.entityId, label: t.label }));
+        const anchorByDevice: Record<string, AnchorConfig> = {};
+        for (const a of anchors) anchorByDevice[a.deviceId] = a;
 
-          for (const tc of trackers) {
-            const labelLower = (tc.label || '').toLowerCase();
-            let phoneEntry: BermudaDevice | undefined;
-            for (const dev of Object.values(dump)) {
-              const nm = (dev.name || '').toString().toLowerCase();
-              if (nm && labelLower && (nm === labelLower || nm.includes(labelLower) || labelLower.includes(nm))) {
-                phoneEntry = dev;
-                break;
-              }
-            }
-            if (!phoneEntry?.adverts) continue;
+        let debugLogged = false;
+        for (const bTracker of parsed.trackers) {
+          const tEntityId = findTrackerEntityForBermuda(bTracker, trackerHandles);
+          if (!tEntityId) continue;
+          const meshEntry = trackerMapRef.current[tEntityId];
+          if (!meshEntry) continue;
 
-            const distances: Record<string, number> = {};
-            for (const [advKey, adv] of Object.entries(phoneEntry.adverts)) {
-              const parts = advKey.split('__');
-              const scannerAddr = parts[0];
-              if (!scannerAddr || !anchorByDevice[scannerAddr]) continue;
-              const d = (adv as BermudaAdvert).rssi_distance_raw;
-              if (typeof d === 'number' && isFinite(d) && d > 0) {
-                distances[scannerAddr] = d;
-              }
-            }
-            trackerDistancesRef.current[tc.entityId] = distances;
-            if (phoneEntry.floor_name) {
-              trackerFloorRef.current[tc.entityId] = phoneEntry.floor_name as string;
-            }
-
-            const now = Date.now();
-            const last = trackerLastUpdateRef.current[tc.entityId] || 0;
-            if (now - last < 200) continue;
-
-            const phoneFloor = trackerFloorRef.current[tc.entityId];
-            const eligible = anchors.filter((a) => {
-              if (!phoneFloor || phoneFloor === 'unknown' || phoneFloor === 'unavailable') return true;
-              return a.floor === phoneFloor;
-            });
-            const useAnchors = eligible.length >= 2 ? eligible : anchors;
-
-            let totalW = 0;
-            let sx = 0, sy = 0, sz = 0;
-            let matched = 0;
-            for (const a of useAnchors) {
-              const d = distances[a.deviceId];
-              if (typeof d !== 'number') continue;
-              const w = 1 / Math.max(d, 0.5);
-              totalW += w;
-              sx += a.position.x * w;
-              sy += a.position.y * w;
-              sz += a.position.z * w;
-              matched++;
-            }
-            if (matched < 1 || totalW <= 0) continue;
-            const pos = { x: sx / totalW, y: sy / totalW, z: sz / totalW };
-
-            const entry = trackerMapRef.current[tc.entityId];
-            const scene3 = sceneCtxRef.current?.scene;
-            if (entry && scene3) {
-              trackerLastUpdateRef.current[tc.entityId] = now;
-              animateTrackerTo(scene3, entry, pos);
+          // Stash distances + floor for debug + Phase C trilateration later.
+          const distances: Record<string, number> = {};
+          for (const r of bTracker.readings) {
+            if (anchorByDevice[r.scannerAddress] && isFinite(r.distance) && r.distance > 0) {
+              distances[r.scannerAddress] = r.distance;
             }
           }
-        } catch (err) {
-          console.warn('[3Dash][bermuda] dump_devices poll failed:', err);
+          trackerDistancesRef.current[tEntityId] = distances;
+          if (bTracker.floor) trackerFloorRef.current[tEntityId] = bTracker.floor;
+
+          // ── Weighted-centroid math (case-insensitive floor compare) ──
+          // Filter anchors by phone's floor when known. If fewer than two
+          // same-floor anchors yield distances, fall back to *all* anchors
+          // with distance (any-floor fallback) so the orb still moves.
+          const phoneFloor = (trackerFloorRef.current[tEntityId] || '').toLowerCase();
+          const knownFloor = phoneFloor && phoneFloor !== 'unknown' && phoneFloor !== 'unavailable';
+          const sameFloor = knownFloor
+            ? anchors.filter((a) => (a.floor || '').toLowerCase() === phoneFloor)
+            : anchors;
+          const sameFloorWithDist = sameFloor.filter((a) => typeof distances[a.deviceId] === 'number');
+          const useAnchors = sameFloorWithDist.length >= 2
+            ? sameFloorWithDist
+            : anchors.filter((a) => typeof distances[a.deviceId] === 'number');
+          if (useAnchors.length < 1) continue;
+
+          let totalW = 0, sx = 0, sy = 0, sz = 0;
+          for (const a of useAnchors) {
+            const d = distances[a.deviceId];
+            const w = 1 / Math.max(d, 0.5);
+            totalW += w;
+            sx += a.position.x * w;
+            sy += a.position.y * w;
+            sz += a.position.z * w;
+          }
+          if (totalW <= 0) continue;
+          const pos = { x: sx / totalW, y: sy / totalW, z: sz / totalW };
+
+          const now = Date.now();
+          const last = trackerLastUpdateRef.current[tEntityId] || 0;
+          if (now - last < 200) continue; // 5 Hz cap
+          trackerLastUpdateRef.current[tEntityId] = now;
+
+          const scene3 = sceneCtxRef.current?.scene;
+          if (scene3) animateTrackerTo(scene3, meshEntry, pos);
+
+          if (!debugLogged) {
+            debugLogged = true;
+            console.info(
+              `[3Dash][bermuda] ${tEntityId} floor=${phoneFloor || '?'} anchors=${useAnchors.length}/${anchors.length} ` +
+              `pos=(${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)})`,
+            );
+          }
         }
       };
       const startTimer = setTimeout(() => {
