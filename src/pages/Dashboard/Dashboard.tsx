@@ -1063,12 +1063,21 @@ export default function Dashboard() {
         return;
       }
       // Default room positions — overridable per tracker after first build.
+      // Keys MUST be in normalized form (lowercase, underscored) so the
+      // `targetForArea()` lookup matches whether HA returns "Dining Room"
+      // or "dining_room". Downstairs rooms sit at y ≈ 1.2 m (eye level on
+      // the main floor); upstairs rooms at y ≈ 4.0 m (one floor up).
       const defaultAreas: Record<string, { x: number; y: number; z: number }> = {
+        // --- Main floor (y ≈ 1.2) ---
         living_room: { x: -3, y: 1.2, z: -2 },
         kitchen: { x: 2, y: 1.2, z: -2 },
         dining_room: { x: 2, y: 1.2, z: 2 },
         laundry_room: { x: -3, y: 1.2, z: 3 },
         bathroom: { x: 0, y: 1.2, z: 0 },
+        // --- Upper floor (y ≈ 4.0) ---
+        master_bedroom: { x: -3, y: 4.0, z: -2 },
+        greysons_room: { x: 2, y: 4.0, z: -2 },
+        keeks_bedroom: { x: 2, y: 4.0, z: 2 },
       };
       const trackers: TrackerConfig[] = candidates.map((s, i) => {
         const slug = s.entity_id.replace('device_tracker.', '');

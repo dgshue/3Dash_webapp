@@ -99,8 +99,50 @@ export function disposeAllTrackers(map: TrackerMeshMap): void {
   for (const id of Object.keys(map)) removeTrackerMesh(map, id);
 }
 
-/** Resolve a tracker's target position from its current area_id (or fallback). */
+/**
+ * Normalize a Home Assistant area name or slug to a canonical key.
+ *
+ * HA's `sensor.<phone>_area` returns the human-readable area NAME (e.g.
+ * "Dining Room", "Greyson's Room") while the area registry / area_id is
+ * a slug (e.g. `dining_room`, `greysons_room`). We want both sides of the
+ * lookup to agree, so apply this on both:
+ *   - the key when writing to `cfg.areaPositions`
+ *   - the value when reading the HA sensor state
+ *
+ * Returns "" for null / empty / unknown inputs — callers should treat that
+ * as a miss and fall back to `cfg.position`.
+ */
+export function normalizeAreaKey(s: string | undefined | null): string {
+  if (!s) return '';
+  return s
+    .toLowerCase()
+    // strip apostrophes (Greyson's → greysons) — include curly + straight
+    .replace(/['‘’ʼ`]/g, '')
+    // collapse any non-alphanumeric run into a single underscore
+    .replace(/[^a-z0-9]+/g, '_')
+    // trim leading/trailing underscores
+    .replace(/^_+|_+$/g, '');
+}
+
+/** Resolve a tracker's target position from its current area_id (or fallback).
+ *
+ *  Tolerates both forms for backward compatibility:
+ *    1. Exact match — handles manually-tuned configs that already used
+ *       custom keys.
+ *    2. Normalized match — handles the common case where HA returns
+ *       a name like "Dining Room" but the config uses `dining_room`.
+ */
 export function targetForArea(cfg: TrackerConfig, areaId: string | undefined): LightPosition {
-  if (areaId && cfg.areaPositions[areaId]) return cfg.areaPositions[areaId];
+  if (!areaId) return cfg.position;
+  // Exact match wins (back-compat with manually-tuned configs)
+  if (cfg.areaPositions[areaId]) return cfg.areaPositions[areaId];
+  // Try the normalized form of the incoming areaId
+  const normIn = normalizeAreaKey(areaId);
+  if (normIn && cfg.areaPositions[normIn]) return cfg.areaPositions[normIn];
+  // Last resort: scan keys, normalizing each one (handles configs whose keys
+  // were typed inconsistently — e.g. "Dining Room" stored verbatim).
+  for (const k of Object.keys(cfg.areaPositions)) {
+    if (normalizeAreaKey(k) === normIn) return cfg.areaPositions[k];
+  }
   return cfg.position;
 }
