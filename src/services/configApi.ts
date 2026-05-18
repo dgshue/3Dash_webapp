@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import type { AppConfig, DisplayConfig, LightConfig, LightGroup, ShadowWallConfig, SidePanelConfig, TubeConfig } from '../types';
+import type { AppConfig, DisplayConfig, LightConfig, LightGroup, ShadowWallConfig, SidePanelConfig, TrackerConfig, TubeConfig } from '../types';
 import { saveModel as dbSaveModel, getModel as dbGetModel, deleteModel as dbDeleteModel } from './storageApi';
 import { getSettings, setAllSettings, type AppSettings } from './settingsStore';
 import { isSimulationActive } from '../contexts/SimulationModeContext';
@@ -49,6 +49,7 @@ export function updateConfig(data: {
   location?: { latitude: number; longitude: number; northOffset?: number };
   sidePanel?: SidePanelConfig;
   tubes?: TubeConfig[];
+  trackers?: TrackerConfig[];
   onboarding?: { completed: boolean };
 }): void {
   if (isSimulationActive()) {

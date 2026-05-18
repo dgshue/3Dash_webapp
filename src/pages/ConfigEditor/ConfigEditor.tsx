@@ -45,9 +45,17 @@ import { arrayMove } from '@dnd-kit/sortable';
 import TubeList from '../../components/TubeList';
 import TubeForm, { type TubePreviewInfo } from '../../components/TubeForm';
 import { createTubeMeshes, removeTubeMeshes, disposeAllTubes, renderMockupLabels, type TubeMap } from '../../babylon/TubeMeshFactory';
+import TrackerList from '../../components/TrackerList';
+import TrackerForm from '../../components/TrackerForm';
+import {
+  createTrackerMesh,
+  removeTrackerMesh,
+  disposeAllTrackers,
+  type TrackerMeshMap,
+} from '../../babylon/TrackerMeshFactory';
 import GuidedTour from '../../components/GuidedTour/GuidedTour';
 import { editorTourSteps } from '../../components/GuidedTour/tourSteps';
-import type { LightConfig, LightGroup, DisplayConfig, ShadowWallConfig, TubeConfig, LightPosition, HAState } from '../../types';
+import type { LightConfig, LightGroup, DisplayConfig, ShadowWallConfig, TubeConfig, TrackerConfig, LightPosition, HAState } from '../../types';
 import './ConfigEditor.css';
 
 export default function ConfigEditor() {
@@ -85,8 +93,8 @@ export default function ConfigEditor() {
   const [toastMsg, setToastMsg] = useState('');
   const [toastVisible, setToastVisible] = useState(false);
 
-  // Editor mode: lights, displays, walls, or tubes
-  const [editorMode, setEditorMode] = useState<'lights' | 'displays' | 'walls' | 'tubes'>('lights');
+  // Editor mode: lights, displays, walls, tubes, or trackers
+  const [editorMode, setEditorMode] = useState<'lights' | 'displays' | 'walls' | 'tubes' | 'trackers'>('lights');
 
   // Load HA entity list for autocomplete in forms (cache-first, else fetch fresh).
   useEffect(() => {
@@ -147,6 +155,21 @@ export default function ConfigEditor() {
   const tubesRef = useRef(tubes);
   tubesRef.current = tubes;
   const tubePreviewInfoRef = useRef<TubePreviewInfo | null>(null);
+
+  // Tracker state
+  const trackerMeshMapRef = useRef<TrackerMeshMap>({});
+  const [trackers, setTrackers] = useState<TrackerConfig[]>([]);
+  const [trackerEditIdx, setTrackerEditIdx] = useState<number | null>(null);
+  const [trackerPanelOpen, setTrackerPanelOpen] = useState(false);
+  const trackerPanelOpenRef = useRef(trackerPanelOpen);
+  trackerPanelOpenRef.current = trackerPanelOpen;
+  const trackersRef = useRef(trackers);
+  trackersRef.current = trackers;
+  /** When in pick mode for a tracker form, this is the row index getting
+   *  the picked point (or null = the default position). */
+  const [trackerPickRowIdx, setTrackerPickRowIdx] = useState<number | null>(-1);
+  const trackerPickRowIdxRef = useRef(trackerPickRowIdx);
+  trackerPickRowIdxRef.current = trackerPickRowIdx;
 
   // Current preview shape/size from LightForm
   const previewInfoRef = useRef<PreviewInfo>({ shape: 'sphere', size: { diameter: 0.25 } });
@@ -480,6 +503,8 @@ export default function ConfigEditor() {
         shadowWallsRef.current = config.shadowWalls || [];
         setTubes(config.tubes || []);
         tubesRef.current = config.tubes || [];
+        setTrackers(config.trackers || []);
+        trackersRef.current = config.trackers || [];
 
         // Load model from IndexedDB
         const modelBlob = await getModelBlob();
@@ -569,6 +594,16 @@ export default function ConfigEditor() {
           positionRef.current = newPos;
         } else if (wallPanelOpenRef.current) {
           // Wall placing mode: exact position, no offset
+          const newPos: LightPosition = {
+            x: parseFloat(p.x.toFixed(3)),
+            y: parseFloat(p.y.toFixed(3)),
+            z: parseFloat(p.z.toFixed(3)),
+          };
+          setPosition(newPos);
+          positionRef.current = newPos;
+        } else if (trackerPanelOpenRef.current) {
+          // Tracker placing mode: NO y-clamping (multi-floor support — the
+          // user picks the right floor by clicking the visible floor mesh).
           const newPos: LightPosition = {
             x: parseFloat(p.x.toFixed(3)),
             y: parseFloat(p.y.toFixed(3)),
@@ -1720,15 +1755,175 @@ export default function ConfigEditor() {
     renderMockupLabels(tubeMeshMapRef.current);
   }, [position, tubePanelOpen]);
 
+  // ── Tracker handlers ───────────────────────────────────────────
+
+  const rebuildTrackerEditorMeshes = useCallback((trackerConfigs: TrackerConfig[]) => {
+    const scene = sceneCtxRef.current?.scene;
+    if (!scene) return;
+    disposeAllTrackers(trackerMeshMapRef.current);
+    for (const tc of trackerConfigs) {
+      // Editor preview: park each tracker at its default position so the user
+      // can see where it lives in space. No HA wiring here.
+      trackerMeshMapRef.current[tc.entityId] = createTrackerMesh(scene, tc);
+    }
+  }, []);
+
+  const handleAddTracker = useCallback(() => {
+    setTrackerEditIdx(null);
+    setPosition({ x: 0, y: 1.2, z: 0 });
+    posUndoStackRef.current = [];
+    setTrackerPickRowIdx(-1);
+    setTrackerPanelOpen(true);
+  }, []);
+
+  const handleEditTracker = useCallback(
+    (idx: number) => {
+      const cfg = trackers[idx];
+      if (!cfg) return;
+      setTrackerEditIdx(idx);
+      setPosition({ x: cfg.position.x, y: cfg.position.y, z: cfg.position.z });
+      posUndoStackRef.current = [];
+      setTrackerPickRowIdx(-1);
+      setTrackerPanelOpen(true);
+    },
+    [trackers],
+  );
+
+  const handleDeleteTracker = useCallback(
+    async (idx: number) => {
+      const deleted = trackers[idx];
+      if (deleted) removeTrackerMesh(trackerMeshMapRef.current, deleted.entityId);
+      const updated = trackers.filter((_, i) => i !== idx);
+      setTrackers(updated);
+      try {
+        await updateConfig({ trackers: updated });
+        showToast('Tracker deleted & synced to server');
+      } catch (e) {
+        console.error('[Config] Auto-save failed:', e);
+        showToast('Tracker deleted locally (server sync failed)');
+      }
+    },
+    [trackers, showToast],
+  );
+
+  const handleDuplicateTracker = useCallback(
+    async (idx: number) => {
+      const src = trackers[idx];
+      if (!src) return;
+      // Generate a unique-enough entityId by appending _copy suffix
+      let copyId = `${src.entityId}_copy`;
+      const taken = new Set(trackers.map((t) => t.entityId));
+      let n = 2;
+      while (taken.has(copyId)) {
+        copyId = `${src.entityId}_copy${n++}`;
+      }
+      const copy: TrackerConfig = {
+        ...src,
+        entityId: copyId,
+        label: (src.label || 'Tracker') + ' (copy)',
+        position: { x: src.position.x + 0.5, y: src.position.y, z: src.position.z },
+        areaPositions: { ...src.areaPositions },
+      };
+      const updated = [...trackers, copy];
+      setTrackers(updated);
+      const scene = sceneCtxRef.current?.scene;
+      if (scene) {
+        trackerMeshMapRef.current[copy.entityId] = createTrackerMesh(scene, copy);
+      }
+      try {
+        await updateConfig({ trackers: updated });
+        showToast('Tracker duplicated & synced to server');
+      } catch (e) {
+        console.error('[Config] Auto-save failed:', e);
+        showToast('Tracker duplicated locally (server sync failed)');
+      }
+    },
+    [trackers, showToast],
+  );
+
+  const handleCloseTrackerPanel = useCallback(() => {
+    setTrackerPanelOpen(false);
+    setTrackerEditIdx(null);
+    setTrackerPickRowIdx(-1);
+    if (placingModeRef.current) {
+      exitPlacingMode();
+    }
+  }, [exitPlacingMode]);
+
+  /** Called by TrackerForm: enter pick mode and remember which row gets the
+   *  point (null = default position). */
+  const handleEnterTrackerPickMode = useCallback(
+    (rowIdx: number | null) => {
+      setTrackerPickRowIdx(rowIdx);
+      enterPlacingMode();
+    },
+    [enterPlacingMode],
+  );
+
+  const handleExitTrackerPickMode = useCallback(() => {
+    setTrackerPickRowIdx(-1);
+    exitPlacingMode();
+  }, [exitPlacingMode]);
+
+  const handleSaveTracker = useCallback(
+    async (cfg: TrackerConfig) => {
+      let updated: TrackerConfig[];
+      if (trackerEditIdx !== null) {
+        // If entityId changed, dispose the old mesh under the old key
+        const oldId = trackers[trackerEditIdx]?.entityId;
+        if (oldId && oldId !== cfg.entityId) {
+          removeTrackerMesh(trackerMeshMapRef.current, oldId);
+        }
+        updated = trackers.map((t, i) => (i === trackerEditIdx ? cfg : t));
+      } else {
+        // Refuse to clobber existing entityId — alert and abort
+        if (trackers.some((t) => t.entityId === cfg.entityId)) {
+          alert(`A tracker with entity ID "${cfg.entityId}" already exists.`);
+          return;
+        }
+        updated = [...trackers, cfg];
+      }
+      setTrackers(updated);
+      setTrackerPanelOpen(false);
+      setTrackerEditIdx(null);
+      setTrackerPickRowIdx(-1);
+
+      // Dispose + recreate this tracker's editor mesh
+      const scene = sceneCtxRef.current?.scene;
+      if (scene) {
+        removeTrackerMesh(trackerMeshMapRef.current, cfg.entityId);
+        trackerMeshMapRef.current[cfg.entityId] = createTrackerMesh(scene, cfg);
+      }
+
+      try {
+        await updateConfig({ trackers: updated });
+        showToast('Tracker saved & synced to server');
+      } catch (e) {
+        console.error('[Config] Auto-save failed:', e);
+        showToast('Tracker saved locally (server sync failed)');
+      }
+    },
+    [trackers, trackerEditIdx, showToast],
+  );
+
+  // Show editor tracker meshes when on the trackers tab, hide otherwise.
+  useEffect(() => {
+    if (editorMode === 'trackers') {
+      rebuildTrackerEditorMeshes(trackersRef.current);
+    } else {
+      disposeAllTrackers(trackerMeshMapRef.current);
+    }
+  }, [editorMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Save config to server
   const handleSaveConfig = useCallback(async () => {
     try {
-      await updateConfig({ lights, lightGroups, displays, shadowWalls, tubes });
-      showToast(`Saved ${lights.length} lights + ${displays.length} displays + ${shadowWalls.length} walls + ${tubes.length} tubes to server`);
+      await updateConfig({ lights, lightGroups, displays, shadowWalls, tubes, trackers });
+      showToast(`Saved ${lights.length} lights + ${displays.length} displays + ${shadowWalls.length} walls + ${tubes.length} tubes + ${trackers.length} trackers to server`);
     } catch (e) {
       alert('Failed to save config: ' + (e instanceof Error ? e.message : e));
     }
-  }, [lights, displays, shadowWalls, tubes, showToast]);
+  }, [lights, lightGroups, displays, shadowWalls, tubes, trackers, showToast]);
 
   // Load config from server
   const handleLoadConfig = useCallback(async () => {
@@ -1740,6 +1935,8 @@ export default function ConfigEditor() {
       setShadowWalls(config.shadowWalls || []);
       setTubes(config.tubes || []);
       tubesRef.current = config.tubes || [];
+      setTrackers(config.trackers || []);
+      trackersRef.current = config.trackers || [];
       const scene = sceneCtxRef.current?.scene;
       if (scene) {
         rebuildAllMeshes(scene, meshMapRef.current, config.lights || []);
@@ -1754,7 +1951,7 @@ export default function ConfigEditor() {
         }
         renderMockupLabels(tubeMeshMapRef.current);
       }
-      showToast(`Loaded ${config.lights?.length || 0} lights + ${config.displays?.length || 0} displays + ${config.shadowWalls?.length || 0} walls + ${config.tubes?.length || 0} tubes`);
+      showToast(`Loaded ${config.lights?.length || 0} lights + ${config.displays?.length || 0} displays + ${config.shadowWalls?.length || 0} walls + ${config.tubes?.length || 0} tubes + ${config.trackers?.length || 0} trackers`);
     } catch (e) {
       alert('Failed to load config: ' + (e instanceof Error ? e.message : e));
     }
@@ -1802,6 +1999,13 @@ export default function ConfigEditor() {
           >
             Tubes ({tubes.length})
           </button>
+          <button
+            className={`editor-tab${editorMode === 'trackers' ? ' active' : ''}`}
+            data-tab="trackers"
+            onClick={() => setEditorMode('trackers')}
+          >
+            Trackers ({trackers.length})
+          </button>
         </div>
 
         <div className="light-list">
@@ -1835,13 +2039,21 @@ export default function ConfigEditor() {
               onDelete={handleDeleteWall}
               onDuplicate={handleDuplicateWall}
             />
-          ) : (
+          ) : editorMode === 'tubes' ? (
             <TubeList
               tubes={tubes}
               selectedIdx={tubeEditIdx}
               onSelect={handleEditTube}
               onDelete={handleDeleteTube}
               onDuplicate={handleDuplicateTube}
+            />
+          ) : (
+            <TrackerList
+              trackers={trackers}
+              selectedIdx={trackerEditIdx}
+              onSelect={handleEditTracker}
+              onDelete={handleDeleteTracker}
+              onDuplicate={handleDuplicateTracker}
             />
           )}
         </div>
@@ -1859,9 +2071,13 @@ export default function ConfigEditor() {
             <button className="btn btn-primary editor-add-btn" onClick={handleAddWall}>
               + Add Wall
             </button>
-          ) : (
+          ) : editorMode === 'tubes' ? (
             <button className="btn btn-primary editor-add-btn" onClick={handleAddTube}>
               + Add Tube
+            </button>
+          ) : (
+            <button className="btn btn-primary editor-add-btn" onClick={handleAddTracker}>
+              + Add Tracker
             </button>
           )}
           <button className="btn btn-ghost" onClick={handleLoadConfig}>
@@ -1877,7 +2093,15 @@ export default function ConfigEditor() {
       <div className="canvas-area editor-canvas">
         <canvas ref={canvasRef} />
         <div className={`mode-banner${placingMode ? ' visible' : ''}`}>
-          {displayPanelOpen ? 'Click on a wall surface to place display' : wallPanelOpen ? 'Click on the model to place wall' : 'Click on the model to place light'}
+          {displayPanelOpen
+            ? 'Click on a wall surface to place display'
+            : wallPanelOpen
+              ? 'Click on the model to place wall'
+              : trackerPanelOpen
+                ? (trackerPickRowIdx === null
+                    ? 'Click anywhere on the model to set tracker default position'
+                    : `Click to set room position (click upstairs floor for upstairs y)`)
+                : 'Click on the model to place light'}
         </div>
         <div className="coord-readout">{coordText}</div>
         <div className={`toast${toastVisible ? ' show' : ''}`}>{toastMsg}</div>
@@ -1933,6 +2157,20 @@ export default function ConfigEditor() {
           onSave={handleSaveTube}
           onClose={handleCloseTubePanel}
           onPreviewChange={handleTubePreviewChange}
+          haEntities={haEntities}
+        />
+
+        <TrackerForm
+          open={trackerPanelOpen}
+          editTracker={trackerEditIdx !== null ? trackers[trackerEditIdx] : null}
+          position={position}
+          onPositionChange={handlePositionChange}
+          onSave={handleSaveTracker}
+          onClose={handleCloseTrackerPanel}
+          onEnterPickMode={handleEnterTrackerPickMode}
+          onExitPickMode={handleExitTrackerPickMode}
+          pickingRowIdx={trackerPickRowIdx}
+          placingMode={placingMode}
           haEntities={haEntities}
         />
       </div>
