@@ -50,6 +50,11 @@ import {
   type AnchorMeshMap,
 } from '../../babylon/AnchorMeshFactory';
 import {
+  solveTrilateration,
+  type TrilaterationAnchor,
+} from '../../babylon/Trilateration';
+import { PositionKalman } from '../../babylon/PositionKalman';
+import {
   dumpBermudaDevices,
   parseBermudaDump,
   findTrackerEntityForBermuda,
@@ -91,6 +96,10 @@ export default function Dashboard() {
   const trackerFloorRef = useRef<Record<string, string>>({});
   /** Phase B: 5 Hz throttle map (trackerEntityId -> last update ms). */
   const trackerLastUpdateRef = useRef<Record<string, number>>({});
+  /** Phase C: per-tracker Kalman filter (created lazily on first solve). */
+  const trackerKalmanRef = useRef<Record<string, PositionKalman>>({});
+  /** Phase C: per-tracker last solver tick (for Kalman dt). */
+  const trackerLastSolveRef = useRef<Record<string, number>>({});
   /** Phase B: dump_devices polling timer. */
   const bermudaPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const haRef = useRef<HALike | null>(null);
@@ -1067,6 +1076,11 @@ export default function Dashboard() {
       disposeAllTrackers(trackerMapRef.current);
       disposeAllAnchors(anchorMapRef.current);
       trackerAreaToEntityRef.current = {};
+      trackerKalmanRef.current = {};
+      trackerLastSolveRef.current = {};
+      trackerDistancesRef.current = {};
+      trackerFloorRef.current = {};
+      trackerLastUpdateRef.current = {};
       if (bermudaPollTimerRef.current) { clearInterval(bermudaPollTimerRef.current); bermudaPollTimerRef.current = null; }
       if (weatherIntervalRef) clearInterval(weatherIntervalRef);
       weatherRef.current?.dispose();
@@ -1432,37 +1446,104 @@ export default function Dashboard() {
           trackerDistancesRef.current[tEntityId] = distances;
           if (bTracker.floor) trackerFloorRef.current[tEntityId] = bTracker.floor;
 
-          // ── Weighted-centroid math (case-insensitive floor compare) ──
-          // Filter anchors by phone's floor when known. If fewer than two
-          // same-floor anchors yield distances, fall back to *all* anchors
-          // with distance (any-floor fallback) so the orb still moves.
+          // ── Phase C: trilateration + Kalman ──
+          // Build solver inputs: anchors with measured distance, soft-weighted
+          // by floor match. Constrain y to the phone's floor band.
           const phoneFloor = (trackerFloorRef.current[tEntityId] || '').toLowerCase();
           const knownFloor = phoneFloor && phoneFloor !== 'unknown' && phoneFloor !== 'unavailable';
-          const sameFloor = knownFloor
+          const yBand: [number, number] | undefined =
+            !knownFloor ? undefined
+            : phoneFloor === 'upper' ? [3.0, 5.5]
+            : phoneFloor === 'main'  ? [0.0, 2.5]
+            : undefined;
+
+          // Same-floor anchors with distance.
+          const sameFloorList = knownFloor
             ? anchors.filter((a) => (a.floor || '').toLowerCase() === phoneFloor)
             : anchors;
-          const sameFloorWithDist = sameFloor.filter((a) => typeof distances[a.deviceId] === 'number');
-          const useAnchors = sameFloorWithDist.length >= 2
-            ? sameFloorWithDist
-            : anchors.filter((a) => typeof distances[a.deviceId] === 'number');
-          if (useAnchors.length < 1) continue;
+          const sameFloorWithDist = sameFloorList.filter((a) => typeof distances[a.deviceId] === 'number');
 
-          let totalW = 0, sx = 0, sy = 0, sz = 0;
-          for (const a of useAnchors) {
-            const d = distances[a.deviceId];
-            const w = 1 / Math.max(d, 0.5);
-            totalW += w;
-            sx += a.position.x * w;
-            sy += a.position.y * w;
-            sz += a.position.z * w;
+          // Weighted centroid warm-start (Phase B fallback if solver under-determined).
+          let centroid: { x: number; y: number; z: number } | null = null;
+          {
+            const allWithDist = anchors.filter((a) => typeof distances[a.deviceId] === 'number');
+            if (allWithDist.length > 0) {
+              let totalW = 0, sx = 0, sy = 0, sz = 0;
+              for (const a of allWithDist) {
+                const d = distances[a.deviceId];
+                const w = 1 / Math.max(d, 0.5);
+                totalW += w;
+                sx += a.position.x * w;
+                sy += a.position.y * w;
+                sz += a.position.z * w;
+              }
+              if (totalW > 0) centroid = { x: sx / totalW, y: sy / totalW, z: sz / totalW };
+            }
           }
-          if (totalW <= 0) continue;
-          const pos = { x: sx / totalW, y: sy / totalW, z: sz / totalW };
+
+          // Three-tier degradation:
+          //   ≥3 same-floor anchors → trilateration + Kalman
+          //   1-2 anchors with distance → Phase B weighted-centroid (no Kalman)
+          //   0 → leave area-snap path in charge (continue)
+          const totalAvailable = anchors.filter((a) => typeof distances[a.deviceId] === 'number').length;
+          if (totalAvailable < 1) continue;
 
           const now = Date.now();
           const last = trackerLastUpdateRef.current[tEntityId] || 0;
           if (now - last < 200) continue; // 5 Hz cap
+          const lastSolve = trackerLastSolveRef.current[tEntityId] || now;
+          const dt = Math.min(Math.max((now - lastSolve) / 1000, 0.05), 1.0);
           trackerLastUpdateRef.current[tEntityId] = now;
+          trackerLastSolveRef.current[tEntityId] = now;
+
+          let pos: { x: number; y: number; z: number };
+          let residual = 99;
+
+          if (sameFloorWithDist.length >= 3) {
+            // Build solver anchor list — include cross-floor too with weight 0.1
+            // so we have data when floor sensor is uncertain.
+            const sameFloorIds = new Set(sameFloorWithDist.map((a) => a.deviceId));
+            const solverAnchors: TrilaterationAnchor[] = [];
+            for (const a of anchors) {
+              if (typeof distances[a.deviceId] !== 'number') continue;
+              solverAnchors.push({
+                position: a.position,
+                distance: distances[a.deviceId],
+                weight: sameFloorIds.has(a.deviceId) ? 1.0 : 0.1,
+              });
+            }
+            // Warm start = existing Kalman position if any, else centroid, else mesh pos.
+            const kf0 = trackerKalmanRef.current[tEntityId];
+            const warm = kf0?.isInitialized()
+              ? kf0.getState().position
+              : (centroid || meshEntry.config.position || { x: 0, y: 1, z: 0 });
+            const floorBand = yBand ? { yMin: yBand[0], yMax: yBand[1] } : undefined;
+            const sol = solveTrilateration(solverAnchors, warm, floorBand);
+
+            let kf = trackerKalmanRef.current[tEntityId];
+            if (!kf) {
+              kf = new PositionKalman();
+              kf.init(sol.position);
+              trackerKalmanRef.current[tEntityId] = kf;
+            } else {
+              kf.predict(dt);
+            }
+            kf.update(sol.position, sol.residual);
+            pos = kf.getState().position;
+            residual = sol.residual;
+          } else {
+            // Fallback to Phase B weighted-centroid (smoothed through Kalman if alive).
+            if (!centroid) continue;
+            pos = centroid;
+            const kf = trackerKalmanRef.current[tEntityId];
+            if (kf?.isInitialized()) {
+              kf.predict(dt);
+              // Centroid is a coarse estimate — give it ~2 m residual.
+              kf.update(centroid, 2.0);
+              pos = kf.getState().position;
+            }
+            residual = 2.0;
+          }
 
           const scene3 = sceneCtxRef.current?.scene;
           if (scene3) animateTrackerTo(scene3, meshEntry, pos);
@@ -1470,8 +1551,10 @@ export default function Dashboard() {
           if (!debugLogged) {
             debugLogged = true;
             console.info(
-              `[3Dash][bermuda] ${tEntityId} floor=${phoneFloor || '?'} anchors=${useAnchors.length}/${anchors.length} ` +
-              `pos=(${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)})`,
+              `[3Dash][bermuda] ${tEntityId} floor=${phoneFloor || '?'} ` +
+              `anchors=${sameFloorWithDist.length}/${totalAvailable}/${anchors.length} ` +
+              `pos=(${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)}) ` +
+              `res=${residual.toFixed(2)}m`,
             );
           }
         }

@@ -265,3 +265,82 @@ Settings → Safari → Advanced → Website Data → remove
 sizes (Chrome DevTools device toolbar @ 414×896 confirms the side
 panel renders as a bottom sheet, HUD respects safe-area, and the
 canvas fills the remaining viewport).
+
+## Phase C — Trilateration + Kalman (2026-05-18)
+
+**Shipped.** Two commits on `dev`: `3b8473a` (Job 1 anchor-discovery
+merge fix, pre-work) plus the Phase C feature commit, both pushed and
+Portainer-redeployed via stack 157.
+
+**Job 1 — anchor auto-discovery (PRE-WORK)**: Phase B was one-shot —
+if any anchors were already saved, discovery skipped entirely. Users
+who shipped Phase B with 3 upstairs anchors never picked up the 4
+downstairs scanners. Switched to a MERGE strategy that appends every
+`_is_scanner === true` entry not already in `config.anchors`, stacked
+at origin. Verified live against
+`POST /api/services/bermuda/dump_devices?return_response=true` (empty
+JSON body, not `{return_response:true}` — that returns 400): 7
+scanners reported — Greyson's Room Anchor, Master Bedroom Anchor,
+Keek's Bedroom Anchor (Upper); Tower BLE Adapter, Home Assistant
+Voice 0905ac, Button Box, RuView Kiosk (Main). The existing
+`bermudaApi.parseBermudaDump` already filters on `_is_scanner` (no
+substring filter), so no service-layer change needed — just the
+Dashboard's discovery loop.
+
+**Job 2 — `src/babylon/Trilateration.ts` (NEW)**: damped Gauss-Newton
+(Levenberg-Marquardt) 3D least-squares. Minimizes
+`Σ wᵢ (‖P − Aᵢ‖ − dᵢ)²` via diagonal LM damping (Marquardt's
+scale-aware variant), Cramer-style 3x3 Gaussian elimination with
+partial pivoting, accept/reject step with λ shrink (×0.1) on
+improvement and grow (×10) on worsening, optional y-band clamp per
+floor. Stops on `‖Δ‖ < 0.05 m` or 20 iterations. Requires ≥3 valid
+distances; under-determined → returns the warm start unchanged with
+`converged=false` so callers can fall back to centroid. Exports
+`solveTrilateration(anchors, initialGuess, floorBand?)`.
+
+**Job 3 — `src/babylon/PositionKalman.ts` (NEW)**: 6-state
+constant-velocity Kalman (`[px,py,pz,vx,vy,vz]`). Hand-rolled 6x6/3x3
+matrix math on `Float64Array` — no deps. `predict(dt)` exploits the
+structured `F = [[I, dtI],[0, I]]` to touch only the cells that
+change. `update(z, residualMeters)` maps the trilateration residual
+to per-axis measurement σ (clamped 0.5 .. 8 m) so high-residual
+solves auto-smooth more. Symmetrizes P after each update to absorb
+round-off. `getState()` returns position + velocity + position-σ for
+a future confidence ellipsoid.
+
+**Job 4 — wiring (`Dashboard.tsx`)**: 3 Hz poll → for each tracker
+matched via `findTrackerEntityForBermuda`: filter same-floor anchors,
+compute weighted-centroid warm start (cross-floor weighted 0.1),
+call `solveTrilateration` with y-band `[0,2.5]` Main / `[3.0,5.5]`
+Upper, feed `result.position` + `result.residual` into per-tracker
+`PositionKalman` (lazy-init on first solve, predict+update on
+subsequent), animate to `kf.getState().position` at the existing 5 Hz
+throttle. Three-tier degradation:
+  - ≥3 same-floor anchors → trilateration + Kalman (primary path)
+  - 1–2 anchors → weighted-centroid (smoothed through Kalman if alive)
+  - 0 → fall through to area-snap path (unchanged)
+Cleanup clears the per-tracker Kalman / distance / floor / last-solve
+refs alongside mesh disposal.
+
+**Job 5 — confidence ellipsoid**: deferred. Variance is exposed via
+`kf.getState().positionVarianceTrace` for a future pass; mesh
+rendering wasn't added in this commit.
+
+**Build**: `npm run build -- --mode addon` clean (~2 min).
+
+**Caveats / remaining**:
+- All 7 scanners auto-discovered, but the 4 newly-merged downstairs
+  anchors are stacked at origin — user must click-to-place them in
+  the Anchors tab before trilateration becomes meaningful for Main-
+  floor phones. Until then, the Main-floor solve degenerates to a
+  degenerate cluster and Kalman smoothing hides most of the jitter.
+- Kalman σ_pos=0.1, σ_vel=0.5 are conservative defaults. Tune
+  empirically once anchors are placed and orbs are observed walking.
+- Distance metric is still Bermuda's `rssi_distance` (filtered) with
+  `rssi_distance_raw` fallback. `hist_distance_by_interval` median
+  may be steadier — not adopted in this pass.
+- Trilateration uses a soft cross-floor penalty (weight 0.1) rather
+  than hard exclusion, so a phone briefly straddling floors should
+  glide rather than teleport.
+- Confidence ellipsoid (Job 5) and a UI toggle for
+  `setAnchorDebugRadius` remain on the followup list.
