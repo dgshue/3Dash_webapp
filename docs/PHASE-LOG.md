@@ -85,3 +85,75 @@ convention — all 3 current anchors are literally named "X Anchor").
 We don't filter on `is_remote_scanner` because Bermuda sets that
 based on its internal scanner registry, which proves unreliable here.
 
+## Phase B — Implementation shipped (2026-05-18)
+
+**Commit**: `6f2d761` (`feat(phase-b): anchors, multi-floor centroid, upstairs backfill`)
+pushed to `origin/dev`. Portainer stack 157 redeploy returned HTTP 200.
+
+**Files changed**:
+- `src/types/index.ts` — added `AnchorConfig` (deviceId/label/position/floor),
+  `anchors?` on `AppConfig` + `FullConfig`, `distanceEntities?` on `TrackerConfig`.
+- `src/babylon/AnchorMeshFactory.ts` — NEW. Cyan cone "pin" mesh
+  (`createAnchorMesh`, `setAnchorPosition`, `setAnchorVisible`,
+  `setAnchorDebugRadius`, `removeAnchorMesh`, `disposeAllAnchors`).
+- `src/components/AnchorList.tsx` + `src/components/AnchorForm.tsx` — NEW.
+  Mirror the Tracker form pattern: deviceId, label, floor (Main / Upper /
+  Other…), position with "Pick from scene" reusing existing pick mode.
+- `src/pages/ConfigEditor/ConfigEditor.tsx` — added Anchors tab + state,
+  handlers (add/edit/delete/duplicate/save), placing-mode branch, and a
+  rebuildAnchorEditorMeshes flow tied to the tab switch.
+- `src/pages/Dashboard/Dashboard.tsx` — added BermudaDevice/Advert types,
+  anchor mesh render on init, upstairs-defaults backfill block (writes
+  via `updateConfig` once on load if `master_bedroom` / `greysons_room` /
+  `keeks_bedroom` are missing on any existing tracker), `sensor.<phone>_floor`
+  caching in `onStateChanged`, and a 3 Hz `bermuda.dump_devices` poll wired
+  through `ha.request({ type: 'call_service', return_response: true })`.
+  The poller (a) auto-discovers anchors (filters `name ~= /anchor/i`,
+  stacks at origin), (b) builds `trackerDistancesRef[<tracker>] =
+  {anchorDeviceId: meters}` from each `adverts[<scanner>__<phoneMac>].rssi_distance_raw`,
+  (c) filters anchors by `phoneFloor` (Bermuda's `floor_name`), (d) computes
+  inverse-distance-weighted centroid `1/max(d, 0.5)`, (e) animates the
+  tracker via `animateTrackerTo` throttled to 5 Hz per tracker.
+- `src/services/configApi.ts` — added `anchors?` to the `updateConfig` payload.
+
+**Build**: `npm run build -- --mode addon` clean (1m21s). No TS errors.
+
+**Deployment**: Portainer redeploy triggered immediately after push.
+
+**Known limitations**:
+- Only 3 anchors currently exist in the user's Bermuda registry (all
+  upstairs). Plan optimistically expected 6 (3 down + 3 up); auto-discovery
+  picks up whatever Bermuda reports. Downstairs anchors will appear when
+  the user adds new ESPHome devices with "Anchor" in the name.
+- Bermuda phone-entry matching is by label-substring (case-insensitive),
+  since Bermuda's internal IRK keys are opaque and don't correspond to HA
+  `device_tracker.*` entity_ids. The tracker label must contain or equal
+  the phone's Bermuda name (e.g. `"Daniel's iPhone"`). For Daniel, this
+  works because his tracker label was auto-set from the device_tracker
+  friendly_name which matches Bermuda's name.
+- Daniel's existing orb behavior is preserved: the area-snap path in
+  `onStateChanged` still fires on `sensor.daniel_s_iphone_area` updates,
+  so when the centroid path has no data the area-snap still drives him
+  to Dining Room as before. The 5 Hz throttle on centroid updates makes
+  centroid + area updates coexist without queue bloat — whichever fired
+  last wins.
+- The poller assumes `bermuda.dump_devices` exists. If the user removes
+  the Bermuda integration, the poll logs a warning every 3 s but is
+  otherwise harmless.
+- Verifying that subscriptions actually fire requires the user (or an
+  active phone) to be in BLE range of an anchor; the poll loop logs only
+  warnings, not successes, so check Chrome devtools console for
+  `[3Dash][anchor] auto-discovered N anchors from bermuda.dump_devices`
+  after first deploy reload.
+
+**What's left for Phase C**:
+- Real least-squares trilateration solver (vs the current centroid heuristic).
+- Kalman filter for sensor jitter dampening.
+- Confidence ellipsoid visualization when measurement residual is high.
+- Z-band constraint per `sensor.<phone>_floor`.
+- UI toggle for `setAnchorDebugRadius` (translucent sphere visualization
+  of measured distance — code path exists, no UI yet).
+- Phase B currently uses `rssi_distance_raw`; consider switching to the
+  smoothed `hist_distance_by_interval` mean for steadier orbs.
+
+
