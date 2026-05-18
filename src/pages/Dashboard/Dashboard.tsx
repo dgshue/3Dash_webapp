@@ -1358,28 +1358,50 @@ export default function Dashboard() {
         pollErrorCount = 0;
         const parsed = parseBermudaDump(dump);
 
-        // Auto-discover anchors if none are configured yet (one-shot).
-        if (!(configRef.current?.anchors && configRef.current.anchors.length)
-            && parsed.anchors.length > 0) {
-          const discovered: AnchorConfig[] = parsed.anchors.map((a, i) => ({
-            deviceId: a.address,
-            label: a.name || a.address,
-            // Stack at origin so user can spot + click-to-place each one.
-            position: {
-              x: (i % 3) * 0.4 - 0.4,
-              y: a.floor === 'Main' ? 1.5 : 4.0,
-              z: Math.floor(i / 3) * 0.4,
-            },
-            floor: a.floor || 'Main',
-          }));
-          console.info(`[3Dash][anchor] auto-discovered ${discovered.length} anchors from bermuda.dump_devices`);
-          configRef.current = { ...(configRef.current as AppConfig), anchors: discovered };
-          try { updateConfig({ anchors: discovered }); } catch { /* best-effort */ }
-          const scene2 = sceneCtxRef.current?.scene;
-          if (scene2) {
-            for (const a of discovered) {
-              if (!anchorMapRef.current[a.deviceId]) {
-                anchorMapRef.current[a.deviceId] = createAnchorMesh(scene2, a);
+        // Auto-discover anchors. Phase C fix: ALL Bermuda scanners are valid
+        // anchors (Bermuda's dump only lists devices it considers scanners),
+        // so we take every entry where `_is_scanner === true`. This catches
+        // names like "RuView Kiosk", "Home Assistant Voice", "Button Box",
+        // "Tower BLE Adapter" — not just devices literally named "Anchor".
+        //
+        // We MERGE with the existing config rather than one-shot replace: any
+        // scanner Bermuda reports that isn't already in `config.anchors` gets
+        // appended (stacked at origin for the user to click-to-place). This
+        // way users upgrading from Phase B (3 anchors stored) automatically
+        // pick up newly-named scanners without nuking their saved positions.
+        if (parsed.anchors.length > 0) {
+          const existing = configRef.current?.anchors || [];
+          const existingIds = new Set(existing.map((a) => a.deviceId.toLowerCase()));
+          const missing = parsed.anchors.filter((a) => !existingIds.has(a.address.toLowerCase()));
+          if (missing.length > 0) {
+            const startIdx = existing.length;
+            const additions: AnchorConfig[] = missing.map((a, i) => {
+              const idx = startIdx + i;
+              return {
+                deviceId: a.address,
+                label: a.name || a.address,
+                // Stack near origin so the user can spot + click-to-place each one.
+                position: {
+                  x: (idx % 3) * 0.4 - 0.4,
+                  y: a.floor === 'Main' ? 1.5 : 4.0,
+                  z: Math.floor(idx / 3) * 0.4,
+                },
+                floor: a.floor || 'Main',
+              };
+            });
+            const merged = [...existing, ...additions];
+            console.info(
+              `[3Dash][anchor] auto-discovered ${additions.length} new anchors `
+              + `(total ${merged.length}) from bermuda.dump_devices`,
+            );
+            configRef.current = { ...(configRef.current as AppConfig), anchors: merged };
+            try { updateConfig({ anchors: merged }); } catch { /* best-effort */ }
+            const scene2 = sceneCtxRef.current?.scene;
+            if (scene2) {
+              for (const a of additions) {
+                if (!anchorMapRef.current[a.deviceId]) {
+                  anchorMapRef.current[a.deviceId] = createAnchorMesh(scene2, a);
+                }
               }
             }
           }

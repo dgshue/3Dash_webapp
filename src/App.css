@@ -75,3 +75,37 @@ body {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.4; }
 }
+
+/* ---------------------------------------------------------------------------
+ * Embed mode (iframed in HA Lovelace or `?embed=1`).
+ * Hide app chrome that looks out of place inside HA — keep the 3D scene
+ * and entity tiles. Power users can override with `?embed=0`.
+ * ------------------------------------------------------------------------- */
+body.embedded {
+  background: transparent;
+}
+
+body.embedded .hud .title-bar,
+body.embedded .hud .time-display,
+body.embedded .hud .corner {
+  display: none !important;
+}
+
+body.embedded .side-panel-settings-btn {
+  /* Collapse the prominent settings row to a small floating corner button. */
+  position: fixed;
+  bottom: 10px;
+  right: 10px;
+  z-index: 50;
+  padding: 4px 8px;
+  font-size: 11px;
+  opacity: 0.45;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: auto;
+}
+
+body.embedded .side-panel-settings-btn:hover {
+  opacity: 1;
+}

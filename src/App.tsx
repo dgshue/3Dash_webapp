@@ -1,10 +1,11 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { DemoModeProvider } from './contexts/DemoModeContext';
 import { SimulationModeProvider, useSimulationMode } from './contexts/SimulationModeContext';
 import { CameraControlsProvider } from './contexts/CameraControlsContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { hasConfig, getConfig } from './services/configApi';
+import { applyEmbedBodyClass } from './utils/embedMode';
 import Dashboard from './pages/Dashboard/Dashboard';
 
 const ConfigEditor = lazy(() => import('./pages/ConfigEditor/ConfigEditor'));
@@ -34,6 +35,9 @@ function AppRoutes() {
 }
 
 export default function App() {
+  useEffect(() => {
+    return applyEmbedBodyClass();
+  }, []);
   return (
     <ThemeProvider>
       <DemoModeProvider>
