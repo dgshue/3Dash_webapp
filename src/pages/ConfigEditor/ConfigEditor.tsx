@@ -49,6 +49,7 @@ import TrackerList from '../../components/TrackerList';
 import TrackerForm from '../../components/TrackerForm';
 import AnchorList from '../../components/AnchorList';
 import AnchorForm from '../../components/AnchorForm';
+import BermudaDiscoveryModal from '../../components/BermudaDiscoveryModal';
 import {
   createTrackerMesh,
   removeTrackerMesh,
@@ -188,6 +189,10 @@ export default function ConfigEditor() {
   anchorPanelOpenRef.current = anchorPanelOpen;
   const anchorsRef = useRef(anchors);
   anchorsRef.current = anchors;
+  /** Bermuda discovery modal — surfaces every BLE scanner Bermuda sees so
+   *  the user can add any of them as an anchor, not just devices named
+   *  "anchor". */
+  const [discoveryOpen, setDiscoveryOpen] = useState(false);
 
   // Current preview shape/size from LightForm
   const previewInfoRef = useRef<PreviewInfo>({ shape: 'sphere', size: { diameter: 0.25 } });
@@ -1963,6 +1968,35 @@ export default function ConfigEditor() {
     setAnchorPanelOpen(true);
   }, []);
 
+  /** Persist anchors discovered via the Bermuda discovery modal. Each one
+   *  arrives as `placed: false` so the user can click-to-place after
+   *  selecting it in the AnchorList. */
+  const handleDiscoveryAdd = useCallback(
+    async (additions: AnchorConfig[]) => {
+      if (additions.length === 0) return;
+      const updated = [...anchorsRef.current, ...additions];
+      setAnchors(updated);
+      const scene = sceneCtxRef.current?.scene;
+      if (scene) {
+        for (const a of additions) {
+          if (!anchorMeshMapRef.current[a.deviceId]) {
+            anchorMeshMapRef.current[a.deviceId] = createAnchorMesh(scene, a);
+          }
+        }
+      }
+      try {
+        await updateConfig({ anchors: updated });
+        showToast(
+          `Added ${additions.length} anchor${additions.length === 1 ? '' : 's'} from Bermuda`,
+        );
+      } catch (err) {
+        console.error('[Config] Auto-save failed:', err);
+        showToast('Added locally (server sync failed)');
+      }
+    },
+    [],
+  );
+
   const handleEditAnchor = useCallback(
     (idx: number) => {
       const cfg = anchors[idx];
@@ -2271,9 +2305,18 @@ export default function ConfigEditor() {
               + Add Tracker
             </button>
           ) : (
-            <button className="btn btn-primary editor-add-btn" onClick={handleAddAnchor}>
-              + Add Anchor
-            </button>
+            <>
+              <button
+                className="btn btn-primary editor-add-btn"
+                onClick={() => setDiscoveryOpen(true)}
+                title="Pull every BLE scanner Bermuda sees and pick which to add"
+              >
+                + Discover from HA
+              </button>
+              <button className="btn btn-ghost editor-add-btn" onClick={handleAddAnchor}>
+                + Add manually
+              </button>
+            </>
           )}
           <button className="btn btn-ghost" onClick={handleLoadConfig}>
             &uarr; Reload from server
@@ -2381,6 +2424,13 @@ export default function ConfigEditor() {
           onEnterPickMode={handleEnterAnchorPickMode}
           onExitPickMode={handleExitAnchorPickMode}
           placingMode={placingMode}
+        />
+
+        <BermudaDiscoveryModal
+          open={discoveryOpen}
+          existingAnchors={anchors}
+          onAdd={handleDiscoveryAdd}
+          onClose={() => setDiscoveryOpen(false)}
         />
       </div>
 

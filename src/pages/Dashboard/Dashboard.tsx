@@ -40,7 +40,6 @@ import {
   animateTrackerTo,
   setTrackerPosition,
   setTrackerVisible,
-  setTrackerConfidence,
   disposeAllTrackers,
   targetForArea,
   type TrackerMeshMap,
@@ -48,11 +47,8 @@ import {
 import {
   createAnchorMesh,
   disposeAllAnchors,
-  setAnchorPosition,
-  setAnchorDebugRadius,
   type AnchorMeshMap,
 } from '../../babylon/AnchorMeshFactory';
-import { enterPickMode } from '../../babylon/PickMode';
 import {
   solveTrilateration,
   type TrilaterationAnchor,
@@ -66,8 +62,6 @@ import {
   findTrackerEntityForBermuda,
 } from '../../services/bermudaApi';
 import HUD from '../../components/HUD';
-import AnchorPanel from '../../components/AnchorPanel';
-import CalibrationWizard, { type CaptureSnapshot } from '../../components/CalibrationWizard';
 import LightModal from '../../components/LightModal';
 import RemoteModal from '../../components/RemoteModal';
 import DisplayModal from '../../components/DisplayModal';
@@ -78,7 +72,7 @@ import GuidedTour from '../../components/GuidedTour/GuidedTour';
 import { dashboardTourSteps } from '../../components/GuidedTour/tourSteps';
 import CardPropertiesPanel from '../../components/SidePanel/CardPropertiesPanel';
 import { SIMULATION_CONFIG, SIMULATION_MODEL_URL } from '../../data/simulationData';
-import type { AppConfig, DisplayConfig, LightConfig, LightPosition, RemoteButton, HAState, CardLayout, SidePanelCard, TrackerConfig, AnchorConfig } from '../../types';
+import type { AppConfig, DisplayConfig, LightConfig, RemoteButton, HAState, CardLayout, SidePanelCard, TrackerConfig, AnchorConfig } from '../../types';
 import './Dashboard.css';
 
 const LONG_PRESS_MS = 500;
@@ -110,26 +104,14 @@ export default function Dashboard() {
   const trackerLastSolveRef = useRef<Record<string, number>>({});
   /** Phase B: dump_devices polling timer. */
   const bermudaPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  /** Phase 1: Bermuda scanner addresses (lowercased) seen in the last poll.
-   *  Drives the AnchorPanel "live" indicator. */
-  const liveAnchorIdsRef = useRef<Set<string>>(new Set());
-  /** Phase 1: lifecycle handle for the active anchor click-to-place pick mode. */
-  const anchorPickCancelRef = useRef<(() => void) | null>(null);
-  /** Phase 3: latest parsed Bermuda dump (per-tracker readings) — read by the
-   *  calibration wizard to snapshot what each anchor sees. */
+  /** Per-tracker {rssiByAnchor, distanceByAnchor} from the latest Bermuda
+   *  poll. Calibration capture (now living in /editor) reads this when
+   *  /dashboard is the page currently polling. */
   const lastBermudaTrackersRef = useRef<
     Record<string, { rssiByAnchor: Record<string, number>; distanceByAnchor: Record<string, number> }>
   >({});
-  /** Phase 3: handle for an in-progress calibration pick (used to cancel
-   *  pick mode if the user closes the wizard mid-pick). */
-  const calibrationPickCancelRef = useRef<(() => void) | null>(null);
-  /** Phase 4: cached fingerprints — refreshed each Bermuda poll. */
+  /** Cached fingerprints — refreshed each Bermuda poll for the k-NN solver. */
   const fingerprintsRef = useRef<ReturnType<typeof getFingerprints>>([]);
-  /** Phase 5: per-anchor last-seen ms-since-epoch (drives stale warning). */
-  const anchorLastSeenRef = useRef<Record<string, number>>({});
-  /** Phase 5: mirror of `diagnosticsOn` for the poll closure (state isn't
-   *  captured in the long-lived setInterval). */
-  const diagnosticsOnRef = useRef(false);
   const haRef = useRef<HALike | null>(null);
   const configRef = useRef<AppConfig | null>(null);
   const lastStatesRef = useRef<Record<string, HAState>>({});
@@ -186,23 +168,13 @@ export default function Dashboard() {
     updateSettings('misc', { panelRatio: ratio });
   }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  /** Phase 1: AnchorPanel visibility + currently-placing anchor. */
-  const [anchorPanelOpen, setAnchorPanelOpen] = useState(false);
-  const [placingAnchorId, setPlacingAnchorId] = useState<string | null>(null);
-  /** Phase 1: anchors mirrored from configRef.current so the panel re-renders
-   *  when auto-discovery adds new ones or the user places/hides. */
+  /** Anchors mirrored from configRef.current so the Bermuda auto-discovery
+   *  merge keeps React state in sync. The placement / calibration UI lives
+   *  in /editor; this just keeps the silent solver path fed. */
   const [dashboardAnchors, setDashboardAnchors] = useState<AnchorConfig[]>([]);
-  /** Phase 1: lowercased scanner addresses seen in the last Bermuda poll. */
-  const [liveAnchorIds, setLiveAnchorIds] = useState<Set<string>>(new Set());
-  /** Phase 3: calibration wizard visibility. */
-  const [calibrationWizardOpen, setCalibrationWizardOpen] = useState(false);
-  /** Phase 5: diagnostics overlay on/off. */
-  const [diagnosticsOn, setDiagnosticsOn] = useState(false);
-  /** Phase 5: ms-since-epoch each anchor last produced an advert.
-   *  Drives the panel's "stale anchor" warning. */
-  const [anchorLastSeen, setAnchorLastSeen] = useState<Record<string, number>>({});
-  /** Phase 3: mirror configured trackers so the wizard's tracker dropdown
-   *  refreshes when auto-discovery adds new entries. */
+  /** Trackers mirrored from configRef.current — currently unused outside
+   *  the solver but cheap to keep in sync if the calibration flow comes
+   *  back to /dashboard later. */
   const [dashboardTrackers, setDashboardTrackers] = useState<TrackerConfig[]>([]);
   const [cardStates, setCardStates] = useState<Record<string, HAState>>({});
   const [gridEditMode, setGridEditMode] = useState(false);
@@ -474,112 +446,6 @@ export default function Dashboard() {
       }
     }, 400);
   }, [sunLiveMode, sliderValue]);
-
-  // Phase 5: diagnostics state → ref bridge so the long-lived poll closure
-  // sees the latest value without re-creating the interval.
-  useEffect(() => {
-    diagnosticsOnRef.current = diagnosticsOn;
-    // Immediate sphere cleanup when turning OFF (don't wait for next poll).
-    if (!diagnosticsOn) {
-      const scene = sceneCtxRef.current?.scene;
-      if (scene) {
-        for (const entry of Object.values(anchorMapRef.current)) {
-          setAnchorDebugRadius(scene, entry, 0);
-        }
-        // Phase 7: also drop tracker confidence spheres.
-        for (const entry of Object.values(trackerMapRef.current)) {
-          setTrackerConfidence(scene, entry, 0);
-        }
-      }
-    }
-  }, [diagnosticsOn]);
-
-  // Phase 1: Anchor click-to-place handlers ---------------------------------
-
-  const persistAnchors = useCallback((next: AnchorConfig[]) => {
-    if (configRef.current) {
-      configRef.current = { ...(configRef.current as AppConfig), anchors: next };
-    }
-    setDashboardAnchors(next);
-    try { updateConfig({ anchors: next }); } catch (err) {
-      console.warn('[3Dash][anchor] failed to persist anchors:', err);
-    }
-  }, []);
-
-  const handleAnchorPlace = useCallback((deviceId: string) => {
-    const scene = sceneCtxRef.current?.scene;
-    if (!scene) return;
-    // Cancel any previous placement first.
-    anchorPickCancelRef.current?.();
-    anchorPickCancelRef.current = null;
-    setPlacingAnchorId(deviceId);
-    anchorPickCancelRef.current = enterPickMode(scene, (point) => {
-      anchorPickCancelRef.current = null;
-      setPlacingAnchorId(null);
-      const current = configRef.current?.anchors || [];
-      const idx = current.findIndex((a) => a.deviceId === deviceId);
-      if (idx < 0) return;
-      const next = current.slice();
-      next[idx] = {
-        ...current[idx],
-        position: { x: point.x, y: point.y, z: point.z },
-        placed: true,
-      };
-      // Update the mesh in place so the cyan pin jumps to the picked spot.
-      const entry = anchorMapRef.current[deviceId];
-      if (entry) setAnchorPosition(entry, point.x, point.y, point.z);
-      persistAnchors(next);
-    });
-  }, [persistAnchors]);
-
-  const handleAnchorCancelPlace = useCallback(() => {
-    anchorPickCancelRef.current?.();
-    anchorPickCancelRef.current = null;
-    setPlacingAnchorId(null);
-  }, []);
-
-  // Phase 3: Calibration wizard adapters --------------------------------------
-
-  /** Resolve to the next picked point. Wraps `enterPickMode` so the wizard
-   *  doesn't need a Babylon reference. Returns null if the wizard is closed
-   *  before a pick lands (handlers stash a cancel that resolves with null). */
-  const handleRequestCalibrationPick = useCallback((): Promise<LightPosition | null> => {
-    return new Promise((resolve) => {
-      const scene = sceneCtxRef.current?.scene;
-      if (!scene) {
-        resolve(null);
-        return;
-      }
-      calibrationPickCancelRef.current?.();
-      calibrationPickCancelRef.current = enterPickMode(scene, (point) => {
-        calibrationPickCancelRef.current = null;
-        resolve(point);
-      });
-    });
-  }, []);
-
-  const handleCaptureCalibrationSnapshot = useCallback(
-    (trackerEntityId: string): CaptureSnapshot | null => {
-      const snap = lastBermudaTrackersRef.current[trackerEntityId];
-      if (!snap) return null;
-      // Snap stays as a live ref to the most-recent poll. Clone so the wizard
-      // can hold onto it without mutation hazards on the next poll.
-      return {
-        rssiByAnchor: { ...snap.rssiByAnchor },
-        distanceByAnchor: { ...snap.distanceByAnchor },
-      };
-    },
-    [],
-  );
-
-  const handleAnchorToggleHidden = useCallback((deviceId: string) => {
-    const current = configRef.current?.anchors || [];
-    const idx = current.findIndex((a) => a.deviceId === deviceId);
-    if (idx < 0) return;
-    const next = current.slice();
-    next[idx] = { ...current[idx], hidden: !current[idx].hidden };
-    persistAnchors(next);
-  }, [persistAnchors]);
 
   const handleEdgeModeChange = useCallback((mode: 'classic' | 'enhanced') => {
     setEdgeMode(mode);
@@ -1241,12 +1107,6 @@ export default function Dashboard() {
       trackerFloorRef.current = {};
       trackerLastUpdateRef.current = {};
       if (bermudaPollTimerRef.current) { clearInterval(bermudaPollTimerRef.current); bermudaPollTimerRef.current = null; }
-      // Phase 1: cancel any in-flight anchor pick mode so unmount doesn't
-      // leave a dangling onPointerDown handler on the disposed scene.
-      anchorPickCancelRef.current?.();
-      anchorPickCancelRef.current = null;
-      calibrationPickCancelRef.current?.();
-      calibrationPickCancelRef.current = null;
       if (weatherIntervalRef) clearInterval(weatherIntervalRef);
       weatherRef.current?.dispose();
       weatherRef.current = null;
@@ -1552,41 +1412,6 @@ export default function Dashboard() {
         // appended (stacked at origin for the user to click-to-place). This
         // way users upgrading from Phase B (3 anchors stored) automatically
         // pick up newly-named scanners without nuking their saved positions.
-        // Phase 1: update the live-set for the AnchorPanel indicator.
-        // Only re-set state when membership actually changes (poll runs every
-        // 3s; React re-renders only when anchors come/go).
-        {
-          const nextLive = new Set(parsed.anchors.map((a) => a.address.toLowerCase()));
-          const prev = liveAnchorIdsRef.current;
-          const changed = nextLive.size !== prev.size
-            || Array.from(nextLive).some((id) => !prev.has(id));
-          if (changed) {
-            liveAnchorIdsRef.current = nextLive;
-            setLiveAnchorIds(nextLive);
-          }
-        }
-
-        // Phase 5: bump last-seen timestamp for every anchor that emitted an
-        // advert this poll. Anchors not in `parsed.anchors` keep their old
-        // last-seen — staleness is derived in the panel as (now - lastSeen).
-        {
-          const now = Date.now();
-          let anyUpdate = false;
-          for (const a of parsed.anchors) {
-            const id = a.address.toLowerCase();
-            if (anchorLastSeenRef.current[id] !== undefined) {
-              // Refresh quietly — no React re-render for every poll.
-              anchorLastSeenRef.current[id] = now;
-            } else {
-              anchorLastSeenRef.current = { ...anchorLastSeenRef.current, [id]: now };
-              anyUpdate = true;
-            }
-          }
-          // Push state only when a new anchor first appears, to keep
-          // re-renders rare.
-          if (anyUpdate) setAnchorLastSeen({ ...anchorLastSeenRef.current });
-        }
-
         if (parsed.anchors.length > 0) {
           const existing = configRef.current?.anchors || [];
           const existingIds = new Set(existing.map((a) => a.deviceId.toLowerCase()));
@@ -1817,27 +1642,6 @@ export default function Dashboard() {
           const scene3 = sceneCtxRef.current?.scene;
           if (scene3) animateTrackerTo(scene3, meshEntry, pos);
 
-          // Phase 7: confidence sphere — uses Kalman position σ when alive,
-          // or the solver residual (centroid path) as a fallback. Capped at
-          // 5 m so a degenerate solve doesn't engulf the scene.
-          if (scene3) {
-            if (diagnosticsOnRef.current) {
-              const kf = trackerKalmanRef.current[tEntityId];
-              let confRadius = 0;
-              if (kf?.isInitialized()) {
-                const st = kf.getState();
-                // 1-σ across all three axes — sqrt(variance/3) gives a
-                // symmetric estimate that reads as "average uncertainty".
-                confRadius = Math.sqrt(Math.max(st.positionVarianceTrace, 0) / 3);
-              } else if (isFinite(residual)) {
-                confRadius = Math.min(residual, 5);
-              }
-              setTrackerConfidence(scene3, meshEntry, Math.min(confRadius, 5));
-            } else {
-              setTrackerConfidence(scene3, meshEntry, 0);
-            }
-          }
-
           if (!debugLogged) {
             debugLogged = true;
             console.info(
@@ -1850,33 +1654,6 @@ export default function Dashboard() {
           }
         }
 
-        // Phase 5: diagnostics overlay — render each anchor's translucent
-        // distance sphere using the closest tracker's measurement. When
-        // diagnostics turn off, drop all spheres in one pass.
-        {
-          const scene4 = sceneCtxRef.current?.scene;
-          if (scene4) {
-            for (const a of anchors) {
-              const entry = anchorMapRef.current[a.deviceId];
-              if (!entry) continue;
-              if (!diagnosticsOnRef.current) {
-                setAnchorDebugRadius(scene4, entry, 0);
-                continue;
-              }
-              // Closest tracker's distance to this anchor (across all
-              // configured trackers). Falls back to 0 (hide) if nothing has
-              // a reading.
-              let bestDist = Infinity;
-              for (const [, snap] of Object.entries(lastBermudaTrackersRef.current)) {
-                const d = snap.distanceByAnchor[a.deviceId];
-                if (typeof d === 'number' && isFinite(d) && d < bestDist) {
-                  bestDist = d;
-                }
-              }
-              setAnchorDebugRadius(scene4, entry, isFinite(bestDist) ? bestDist : 0);
-            }
-          }
-        }
       };
       const startTimer = setTimeout(() => {
         pollBermuda();
@@ -2377,60 +2154,6 @@ export default function Dashboard() {
           }}
           currentWeather={currentWeather}
         />
-
-        {/* Phase 1: AnchorPanel toggle + panel + placement banner. */}
-        <button
-          className={`anchor-panel-toggle${anchorPanelOpen ? ' active' : ''}`}
-          onClick={() => setAnchorPanelOpen((v) => !v)}
-          title={`Anchors (${dashboardAnchors.filter((a) => a.placed !== false).length}/${dashboardAnchors.length} placed)`}
-          aria-label="Toggle anchor panel"
-        >
-          {'\u{1F4CD}'}
-          {dashboardAnchors.some((a) => a.placed === false) && (
-            <span className="anchor-panel-toggle-badge">
-              {dashboardAnchors.filter((a) => a.placed === false).length}
-            </span>
-          )}
-        </button>
-        <AnchorPanel
-          open={anchorPanelOpen}
-          onClose={() => setAnchorPanelOpen(false)}
-          anchors={dashboardAnchors}
-          liveDeviceIds={liveAnchorIds}
-          placingDeviceId={placingAnchorId}
-          anchorLastSeen={anchorLastSeen}
-          diagnosticsOn={diagnosticsOn}
-          onPlace={handleAnchorPlace}
-          onCancelPlace={handleAnchorCancelPlace}
-          onToggleHidden={handleAnchorToggleHidden}
-          onCalibrate={() => {
-            setAnchorPanelOpen(false);
-            setCalibrationWizardOpen(true);
-          }}
-          onDiagnostics={() => setDiagnosticsOn((v) => !v)}
-        />
-        <CalibrationWizard
-          open={calibrationWizardOpen}
-          onClose={() => {
-            calibrationPickCancelRef.current?.();
-            calibrationPickCancelRef.current = null;
-            setCalibrationWizardOpen(false);
-          }}
-          trackers={dashboardTrackers}
-          anchors={dashboardAnchors}
-          onRequestPick={handleRequestCalibrationPick}
-          onCaptureSnapshot={handleCaptureCalibrationSnapshot}
-        />
-        {placingAnchorId && (
-          <div className="anchor-place-banner">
-            Click on the model to place
-            {' '}
-            <strong>
-              {dashboardAnchors.find((a) => a.deviceId === placingAnchorId)?.label
-                || placingAnchorId}
-            </strong>
-          </div>
-        )}
 
         <LightModal
           visible={modalVisible}
