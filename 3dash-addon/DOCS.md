@@ -1,27 +1,45 @@
-# 3Dash -- Documentation
+# 3Dash — Documentation
 
 ## Getting started
 
-Once the add-on is installed and running, open 3Dash in your browser at:
+This add-on uses Home Assistant **ingress**, so 3Dash is served under HA's
+own URL and certificate. The big win: it works in the HA **Companion App**
+on iOS / Android — no self-signed-cert workarounds needed.
 
-```
-http://<your-ha-ip>:8099
-```
+After installing and starting the add-on:
 
-Replace `<your-ha-ip>` with the IP address of your Home Assistant machine (e.g. `http://192.168.1.100:8099`).
+1. Open the **3Dash** entry in HA's left sidebar (panel icon: floor-plan).
+2. Click **Open Web UI** if you prefer a separate tab.
+3. The onboarding wizard runs the first time you open it:
+   - HA URL/port — usually default works under ingress.
+   - **Long-lived access token** — create one at HA profile → Security.
+   - Lat/lng for sun tracking.
+   - Upload a `.glb` 3D model of your home.
 
-The onboarding wizard will guide you through the initial setup:
+There is **no host port** exposed. All traffic flows through HA's ingress
+proxy.
 
-1. Enter your Home Assistant URL and port (default: `8123`).
-2. Provide a **long-lived access token** (create one in your HA profile under **Security > Long-lived access tokens**).
-3. Set your location (latitude/longitude) for accurate sun positioning.
-4. Upload a `.glb` 3D model of your home.
+## BLE positioning (this fork)
 
-The default port is `8099`. You can change it in **Settings > Add-ons > 3Dash > Configuration**.
+This fork adds real-time BLE positioning of family iPhones inside the 3D
+scene. Workflow once the add-on is running:
+
+1. Make sure Bermuda + Private BLE Device integrations are configured
+   in HA and resolving your phone(s) by IRK.
+2. Open 3Dash → click the 📍 icon (top-right) to open the **Anchors**
+   panel.
+3. For each unplaced anchor (shown with red badge): click **Place**,
+   then click on the 3D model where the BLE scanner physically lives.
+4. (Optional) Click **Calibrate** to capture fingerprints at known
+   spots — once you have 5+, k-NN positioning kicks in and beats
+   trilateration in homes with walls / multipath.
+
+The `/editor` route exposes per-anchor **Calibration (advanced)**
+settings: `refPower`, `pathLossExp`, `antennaGainDbi`, `trustWeight`.
 
 ## Configuration
 
-All configuration happens in the browser -- no files to edit manually.
+All configuration happens in the browser — no files to edit manually.
 
 | What | Where |
 |---|---|
@@ -29,15 +47,16 @@ All configuration happens in the browser -- no files to edit manually.
 | Location (for sun tracking) | Onboarding wizard or Settings |
 | Theme, rendering, camera | Settings modal |
 | Lights, displays, shadow walls, tubes | Config editor |
-
-## SSL / HTTPS
-
-When running behind HTTPS, the add-on automatically uses `wss://` for the WebSocket connection. If you use a self-signed certificate, your browser must trust it for the connection to work.
+| Anchors, trackers, calibration | Dashboard 📍 panel + `/editor` Anchors tab |
 
 ## Backup and restore
 
-You can export your full configuration (lights, displays, settings, and 3D model) as a ZIP file from the settings panel. Use this to back up your setup or transfer it to another instance.
+Export your full configuration (lights, displays, settings, 3D model)
+as a ZIP from the settings panel. Calibration fingerprints live in
+`localStorage["3dash.calibration"]` (export/import flow coming in
+Phase 7).
 
 ## Support
 
-For issues and feature requests, visit the [GitHub repository](https://github.com/kdcius/3Dash_webapp).
+Fork repository: <https://github.com/dgshue/3Dash_webapp>.
+Upstream: <https://github.com/kdcius/3Dash_webapp>.
