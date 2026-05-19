@@ -96,6 +96,10 @@ export default function Dashboard() {
   const trackerDistancesRef = useRef<Record<string, Record<string, number>>>({});
   /** Phase B: per-tracker last-known floor (from sensor.<phone>_floor). */
   const trackerFloorRef = useRef<Record<string, string>>({});
+  /** Hysteresis buffer for floor changes — require N consecutive observations
+   *  on a new floor before switching trackerFloorRef. Prevents brief
+   *  upstairs/downstairs flaps from teleporting the orb between Y-band clamps. */
+  const trackerFloorPendingRef = useRef<Record<string, { floor: string; count: number }>>({});
   /** Phase B: 5 Hz throttle map (trackerEntityId -> last update ms). */
   const trackerLastUpdateRef = useRef<Record<string, number>>({});
   /** Phase C: per-tracker Kalman filter (created lazily on first solve). */
@@ -1105,6 +1109,7 @@ export default function Dashboard() {
       trackerLastSolveRef.current = {};
       trackerDistancesRef.current = {};
       trackerFloorRef.current = {};
+      trackerFloorPendingRef.current = {};
       trackerLastUpdateRef.current = {};
       if (bermudaPollTimerRef.current) { clearInterval(bermudaPollTimerRef.current); bermudaPollTimerRef.current = null; }
       if (weatherIntervalRef) clearInterval(weatherIntervalRef);
@@ -1243,12 +1248,37 @@ export default function Dashboard() {
             animateTrackerTo(sceneCtxRef.current.scene, entry, target);
           }
         }
-        // Phase B: sensor.<phone>_floor changed → cache for centroid filter
+        // Phase B: sensor.<phone>_floor changed → cache for centroid filter.
+        // Hysteresis: a brief upstairs flap (one cycle where an upstairs
+        // scanner momentarily has stronger RSSI) was teleporting the orb
+        // 3m+ vertically because per-floor Y-band clamps reset the height.
+        // Require FLOOR_HYSTERESIS_CYCLES consecutive observations of the
+        // new floor before actually switching. Same-floor reports clear
+        // the pending counter so a real move still takes effect quickly
+        // (1-2s at the BLE update cadence).
+        const FLOOR_HYSTERESIS_CYCLES = 3;
         if (entityId.startsWith('sensor.') && entityId.endsWith('_floor')) {
           const slug = entityId.replace(/^sensor\./, '').replace(/_floor$/, '');
           const tEntityId = `device_tracker.${slug}`;
           if (trackerMapRef.current[tEntityId]) {
-            trackerFloorRef.current[tEntityId] = state.state;
+            const current = trackerFloorRef.current[tEntityId];
+            const next = state.state;
+            if (!current || next === current) {
+              // First observation or no change → accept immediately + clear pending
+              trackerFloorRef.current[tEntityId] = next;
+              delete trackerFloorPendingRef.current[tEntityId];
+            } else {
+              const pending = trackerFloorPendingRef.current[tEntityId];
+              if (pending && pending.floor === next) {
+                pending.count++;
+                if (pending.count >= FLOOR_HYSTERESIS_CYCLES) {
+                  trackerFloorRef.current[tEntityId] = next;
+                  delete trackerFloorPendingRef.current[tEntityId];
+                }
+              } else {
+                trackerFloorPendingRef.current[tEntityId] = { floor: next, count: 1 };
+              }
+            }
           }
         }
 

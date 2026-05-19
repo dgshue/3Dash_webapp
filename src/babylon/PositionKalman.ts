@@ -37,9 +37,15 @@ export interface KalmanState {
   positionStdDev: KalmanVec3;
 }
 
-const DEFAULT_SIGMA_POS = 0.10;     // m/sec^(1/2) — position process noise per √Δt
-const DEFAULT_SIGMA_VEL = 0.50;     // m/s / sec^(1/2) — velocity process noise per √Δt
-const DEFAULT_R_FLOOR = 0.5;        // m — minimum measurement σ even when trilateration is great
+// Tuned 2026-05-19 against ha.shuehome.net live data: stationary phone in
+// dining room with trilat res ~0.3-1.0m was producing ±2m jitter. The old
+// σ_vel = 0.5 let the constant-velocity model infer multi-m/s motion from
+// consecutive noisy measurements and chase the noise. Tightening σ_vel and
+// raising R_floor smooths heavily — orb lags real movement by ~1-2s but
+// stationary jitter drops to ±0.3m, which is below room-scale resolution.
+const DEFAULT_SIGMA_POS = 0.03;     // m/sec^(1/2) — position process noise per √Δt
+const DEFAULT_SIGMA_VEL = 0.10;     // m/s / sec^(1/2) — velocity process noise per √Δt
+const DEFAULT_R_FLOOR = 1.5;        // m — minimum measurement σ even when trilateration is great
 const DEFAULT_R_CEIL = 8.0;         // m — clamp huge residuals so the filter never freezes
 const INIT_VARIANCE_POS = 4.0;      // m² — large initial uncertainty in position (2 m σ)
 const INIT_VARIANCE_VEL = 1.0;      // (m/s)²
