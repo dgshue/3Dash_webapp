@@ -23,7 +23,7 @@ import { getConfig, updateConfig, getModelBlob } from '../../services/configApi'
 import { getEntityCache, setEntityCache } from '../../services/entityCache';
 import type { HAEntityOption } from '../../components/EntityPicker';
 import { getSetting, updateSettings, type HomeViewPose } from '../../services/settingsStore';
-import { HAConnection, type HAConnectionStatus, type HALike, setActiveHAConnection } from '../../services/haWebSocket';
+import { HAConnection, type HAConnectionError, type HAConnectionStatus, type HALike, setActiveHAConnection } from '../../services/haWebSocket';
 import { DemoHAConnection } from '../../services/demoHAConnection';
 import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useSimulationMode } from '../../contexts/SimulationModeContext';
@@ -40,6 +40,8 @@ import {
   animateTrackerTo,
   setTrackerPosition,
   setTrackerVisible,
+  setTrackerLabel,
+  setTrackerLabelVisible,
   disposeAllTrackers,
   targetForArea,
   type TrackerMeshMap,
@@ -129,6 +131,7 @@ export default function Dashboard() {
 
   const [lightsOnCount, setLightsOnCount] = useState(0);
   const [haStatus, setHaStatus] = useState<HAConnectionStatus>('disconnected');
+  const [haLastError, setHaLastError] = useState<HAConnectionError | null>(null);
   const [haSettingsVersion, setHaSettingsVersion] = useState(0);
   const [modelStatus, setModelStatus] = useState('loading');
   const [modelStatusColor, setModelStatusColor] = useState<string | undefined>(undefined);
@@ -249,9 +252,26 @@ export default function Dashboard() {
     setTubeTheme(tubeMapRef.current, theme);
   }, [theme, sceneReady, syncSceneBg]);
 
-  // Listen for real-time appearance changes (e.g. bgColor picker)
+  // Listen for real-time appearance changes (e.g. bgColor picker, tracker
+  // label toggle). The settings modal dispatches `appearance-changed` after
+  // any write into the `appearance` section.
   useEffect(() => {
-    const handler = () => syncSceneBg();
+    const handler = () => {
+      syncSceneBg();
+      const scene = sceneCtxRef.current?.scene;
+      if (!scene) return;
+      const showLabels = getSetting('appearance').showTrackerLabels;
+      for (const entry of Object.values(trackerMapRef.current)) {
+        if (showLabels) {
+          setTrackerLabel(
+            scene,
+            entry,
+            entry.config.label || entry.config.entityId.split('.')[1] || entry.config.entityId,
+          );
+        }
+        setTrackerLabelVisible(entry, showLabels);
+      }
+    };
     window.addEventListener('appearance-changed', handler);
     return () => window.removeEventListener('appearance-changed', handler);
   }, [syncSceneBg]);
@@ -911,8 +931,13 @@ export default function Dashboard() {
         setDashboardTrackers(trackerConfigs);
 
         // Create BLE tracker meshes (moving dots for tracked phones/watches)
+        const showTrackerLabels = getSetting('appearance').showTrackerLabels;
         for (const tc of trackerConfigs) {
-          trackerMapRef.current[tc.entityId] = createTrackerMesh(ctx.scene, tc);
+          const entry = createTrackerMesh(ctx.scene, tc, showTrackerLabels);
+          trackerMapRef.current[tc.entityId] = entry;
+          if (showTrackerLabels) {
+            setTrackerLabel(ctx.scene, entry, tc.label || tc.entityId.split('.')[1] || tc.entityId);
+          }
           if (tc.areaEntityId) {
             trackerAreaToEntityRef.current[tc.areaEntityId] = tc.entityId;
           }
@@ -1196,8 +1221,13 @@ export default function Dashboard() {
       updateConfig({ trackers });
       const scene = sceneCtxRef.current?.scene;
       if (!scene) return;
+      const showTrackerLabels = getSetting('appearance').showTrackerLabels;
       for (const t of trackers) {
-        trackerMapRef.current[t.entityId] = createTrackerMesh(scene, t);
+        const entry = createTrackerMesh(scene, t, showTrackerLabels);
+        trackerMapRef.current[t.entityId] = entry;
+        if (showTrackerLabels) {
+          setTrackerLabel(scene, entry, t.label || t.entityId.split('.')[1] || t.entityId);
+        }
         if (t.areaEntityId) trackerAreaToEntityRef.current[t.areaEntityId] = t.entityId;
       }
       // Apply current states to the new meshes
@@ -1226,7 +1256,11 @@ export default function Dashboard() {
     }
 
     const callbacks = {
-      onStatusChanged: (status: HAConnectionStatus) => setHaStatus(status),
+      onStatusChanged: (status: HAConnectionStatus, error?: HAConnectionError) => {
+        setHaStatus(status);
+        if (status === 'connected') setHaLastError(null);
+        else if (error) setHaLastError(error);
+      },
       onStateChanged: (entityId: string, state: HAState) => {
         stopPendingFeedback(entityId);
         if (meshMapRef.current[entityId]) applyLightState(entityId, state);
@@ -1255,8 +1289,10 @@ export default function Dashboard() {
         // Require FLOOR_HYSTERESIS_CYCLES consecutive observations of the
         // new floor before actually switching. Same-floor reports clear
         // the pending counter so a real move still takes effect quickly
-        // (1-2s at the BLE update cadence).
-        const FLOOR_HYSTERESIS_CYCLES = 3;
+        // (1-2s at the BLE update cadence). Value is user-tunable from
+        // Settings → Tracking; read every event so changes take effect
+        // without a reload.
+        const FLOOR_HYSTERESIS_CYCLES = getSetting('tracking').floorHysteresisCycles;
         if (entityId.startsWith('sensor.') && entityId.endsWith('_floor')) {
           const slug = entityId.replace(/^sensor\./, '').replace(/_floor$/, '');
           const tEntityId = `device_tracker.${slug}`;
@@ -1618,7 +1654,10 @@ export default function Dashboard() {
                 // Feed k-NN through Kalman so we still get temporal smoothing.
                 let kf = trackerKalmanRef.current[tEntityId];
                 if (!kf) {
-                  kf = new PositionKalman();
+                  {
+                    const ts = getSetting('tracking');
+                    kf = new PositionKalman(ts.sigmaPos, ts.sigmaVel, ts.rFloor);
+                  }
                   kf.init(result.position);
                   trackerKalmanRef.current[tEntityId] = kf;
                 } else {
@@ -2279,8 +2318,19 @@ export default function Dashboard() {
           }}
           lightsOnCount={lightsOnCount}
           haStatus={haStatus}
+          haLastError={haLastError}
           modelStatus={modelStatus}
           modelStatusColor={modelStatusColor}
+          itemCounts={{
+            lights: configRef.current?.lights?.length ?? 0,
+            displays: configRef.current?.displays?.length ?? 0,
+            walls: configRef.current?.shadowWalls?.length ?? 0,
+            tubes: configRef.current?.tubes?.length ?? 0,
+            trackers: configRef.current?.trackers?.length ?? 0,
+            scanners: configRef.current?.anchors?.length ?? 0,
+          }}
+          solverRunning={haStatus === 'connected' && Object.keys(trackerKalmanRef.current).length > 0}
+          onResetKalmanFilters={() => { trackerKalmanRef.current = {}; }}
         />
 
         {homeViewSetting && (

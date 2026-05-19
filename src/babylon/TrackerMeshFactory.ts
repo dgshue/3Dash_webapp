@@ -2,6 +2,8 @@ import {
   Scene,
   MeshBuilder,
   StandardMaterial,
+  DynamicTexture,
+  AbstractMesh,
   Color3,
   Vector3,
   Animation,
@@ -29,6 +31,13 @@ export interface TrackerMeshEntry {
    *  variance. Hidden by default; toggled on via setTrackerConfidence. */
   confidenceSphere?: Mesh;
   confidenceMat?: StandardMaterial;
+  /** Optional floating text label parented to the sphere. Always faces the
+   *  camera. Toggled via appearance.showTrackerLabels. Cached text avoids
+   *  pointless DynamicTexture redraws when nothing changes. */
+  label?: Mesh;
+  labelMat?: StandardMaterial;
+  labelTex?: DynamicTexture;
+  labelText?: string;
 }
 
 export type TrackerMeshMap = Record<string, TrackerMeshEntry>;
@@ -36,7 +45,11 @@ export type TrackerMeshMap = Record<string, TrackerMeshEntry>;
 const ANIM_FRAMES = 30; // 500 ms @ 60 fps
 const FPS = 60;
 
-export function createTrackerMesh(scene: Scene, cfg: TrackerConfig): TrackerMeshEntry {
+export function createTrackerMesh(
+  scene: Scene,
+  cfg: TrackerConfig,
+  showLabel = false,
+): TrackerMeshEntry {
   const diameter = cfg.diameter ?? 0.3;
   const sphere = MeshBuilder.CreateSphere(
     `tracker_${cfg.entityId}`,
@@ -57,7 +70,125 @@ export function createTrackerMesh(scene: Scene, cfg: TrackerConfig): TrackerMesh
   mat.diffuseColor = new Color3(0, 0, 0);
   sphere.material = mat;
 
-  return { sphere, mat, config: cfg };
+  const entry: TrackerMeshEntry = { sphere, mat, config: cfg };
+  if (showLabel) {
+    ensureLabel(scene, entry);
+    setTrackerLabel(scene, entry, defaultLabelText(cfg));
+  }
+  return entry;
+}
+
+/* ─── Tracker label (Phase 8) ─────────────────────────────────────────────
+ *  A camera-facing plane parented to the sphere. Same pattern as the
+ *  confidenceSphere above: lazily created, disposed via removeTrackerMesh.
+ *  Texture redraws are debounced by labelText cache to keep the DynamicTexture
+ *  off the per-frame path.
+ */
+
+const LABEL_TEX_W = 256;
+const LABEL_TEX_H = 64;
+const LABEL_PLANE_W = 0.6;
+const LABEL_PLANE_H = 0.15;
+const LABEL_Y_OFFSET = 0.3;
+const LABEL_FONT = 'bold 36px "DM Mono", monospace';
+
+/** Build the label plane / texture / material if not already present. */
+function ensureLabel(scene: Scene, entry: TrackerMeshEntry): void {
+  if (entry.label) return;
+  const id = entry.config.entityId;
+  const plane = MeshBuilder.CreatePlane(
+    `tracker_label_${id}`,
+    { width: LABEL_PLANE_W, height: LABEL_PLANE_H },
+    scene,
+  );
+  plane.parent = entry.sphere;
+  plane.position = new Vector3(0, LABEL_Y_OFFSET, 0);
+  plane.billboardMode = AbstractMesh.BILLBOARDMODE_ALL;
+  plane.isPickable = false;
+  plane.applyFog = false;
+  plane.renderingGroupId = 1; // draw over geometry
+
+  const texture = new DynamicTexture(
+    `tracker_labeltex_${id}`,
+    { width: LABEL_TEX_W, height: LABEL_TEX_H },
+    scene,
+    true,
+  );
+  texture.hasAlpha = true;
+
+  const material = new StandardMaterial(`tracker_labelmat_${id}`, scene);
+  material.disableLighting = true;
+  material.emissiveColor = new Color3(1, 1, 1);
+  material.diffuseTexture = texture;
+  material.emissiveTexture = texture;
+  material.opacityTexture = texture;
+  material.useAlphaFromDiffuseTexture = true;
+  material.backFaceCulling = false;
+  plane.material = material;
+
+  entry.label = plane;
+  entry.labelTex = texture;
+  entry.labelMat = material;
+}
+
+/** Pick the display text: the tracker's label, falling back to the entity
+ *  ID's slug, then the raw entity ID. */
+function defaultLabelText(cfg: TrackerConfig): string {
+  return cfg.label || cfg.entityId.split('.')[1] || cfg.entityId;
+}
+
+/** Paint `text` onto the label texture (creates the plane lazily if missing).
+ *  No-op if the text hasn't changed since the last call. */
+export function setTrackerLabel(scene: Scene, entry: TrackerMeshEntry, text: string): void {
+  ensureLabel(scene, entry);
+  if (entry.labelText === text) return;
+  entry.labelText = text;
+  const tex = entry.labelTex;
+  if (!tex) return;
+  const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
+  const w = LABEL_TEX_W;
+  const h = LABEL_TEX_H;
+  ctx.clearRect(0, 0, w, h);
+
+  // Rounded background panel (rgba black @ 60%, 4px corner)
+  const r = 4;
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.beginPath();
+  ctx.moveTo(r, 0);
+  ctx.lineTo(w - r, 0);
+  ctx.quadraticCurveTo(w, 0, w, r);
+  ctx.lineTo(w, h - r);
+  ctx.quadraticCurveTo(w, h, w - r, h);
+  ctx.lineTo(r, h);
+  ctx.quadraticCurveTo(0, h, 0, h - r);
+  ctx.lineTo(0, r);
+  ctx.quadraticCurveTo(0, 0, r, 0);
+  ctx.closePath();
+  ctx.fill();
+
+  // Text — clip to the texture bounds so long labels just get cut, no scroll.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(6, 0, w - 12, h);
+  ctx.clip();
+  ctx.font = LABEL_FONT;
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, h / 2);
+  ctx.restore();
+
+  tex.update();
+}
+
+/** Toggle label visibility. Safe to call when no label exists (no-op). */
+export function setTrackerLabelVisible(entry: TrackerMeshEntry, visible: boolean): void {
+  if (visible && !entry.label) {
+    const scene = entry.sphere.getScene();
+    ensureLabel(scene, entry);
+    setTrackerLabel(scene, entry, defaultLabelText(entry.config));
+  }
+  entry.label?.setEnabled(visible);
 }
 
 export function animateTrackerTo(scene: Scene, entry: TrackerMeshEntry, to: LightPosition): void {
@@ -134,6 +265,9 @@ export function removeTrackerMesh(map: TrackerMeshMap, entityId: string): void {
   e.mat.dispose();
   e.confidenceSphere?.dispose();
   e.confidenceMat?.dispose();
+  e.label?.dispose();
+  e.labelTex?.dispose();
+  e.labelMat?.dispose();
   delete map[entityId];
 }
 

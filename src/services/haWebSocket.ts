@@ -2,10 +2,20 @@ import type { HAState } from '../types';
 
 export type HAConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error' | 'auth_error';
 
+/** Best-guess reason for the most recent status transition. Populated when
+ *  status moves to error / auth_error / disconnected so the UI can surface
+ *  it without needing devtools. Cleared on successful reconnect. */
+export interface HAConnectionError {
+  status: HAConnectionStatus;
+  message: string;
+  /** ms epoch when the error happened. */
+  at: number;
+}
+
 export interface HACallbacks {
   onStateChanged?: (entityId: string, state: HAState) => void;
   onInitialStates?: (states: HAState[]) => void;
-  onStatusChanged?: (status: HAConnectionStatus) => void;
+  onStatusChanged?: (status: HAConnectionStatus, error?: HAConnectionError) => void;
 }
 
 /** Minimal interface shared by HAConnection and DemoHAConnection. */
@@ -77,7 +87,11 @@ export class HAConnection {
       }
 
       if (msg.type === 'auth_invalid') {
-        this.callbacks.onStatusChanged?.('auth_error');
+        this.callbacks.onStatusChanged?.('auth_error', {
+          status: 'auth_error',
+          message: msg.message ?? 'Invalid access token. Generate a new long-lived token in HA → Profile → Security.',
+          at: Date.now(),
+        });
         return;
       }
 
@@ -100,14 +114,35 @@ export class HAConnection {
     };
 
     this.ws.onerror = () => {
-      this.callbacks.onStatusChanged?.('error');
+      // The WebSocket Web API doesn't expose the underlying reason in the
+      // error event (security). The common failure modes from an HTTPS page
+      // are wss:// to a plain-HTTP HA, an invalid cert, or unreachable host.
+      const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+      const guess = isHttps
+        ? `WebSocket failed to ${wsUrl}. If HA is plain HTTP, an HTTPS page can't connect — use the HTTPS HA URL (e.g. via a reverse proxy or Nabu Casa) instead.`
+        : `WebSocket failed to ${wsUrl}. Check the host / port and that HA is reachable.`;
+      this.callbacks.onStatusChanged?.('error', {
+        status: 'error',
+        message: guess,
+        at: Date.now(),
+      });
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (ev) => {
       for (const p of this.pendingResults.values()) p.reject(new Error('Connection closed'));
       this.pendingResults.clear();
       if (this.disposed) return;
-      this.callbacks.onStatusChanged?.('disconnected');
+      // Code 1006 = abnormal closure (no close frame) — often the mixed-content
+      // / TLS handshake failure case. Surface a slightly more specific hint.
+      const message =
+        ev.code === 1006
+          ? `Connection closed without a close frame (code 1006). Common causes: TLS handshake failure, mixed-content block, or HA process restart. Reconnecting in 5s…`
+          : `Connection closed (code ${ev.code}${ev.reason ? `: ${ev.reason}` : ''}). Reconnecting in 5s…`;
+      this.callbacks.onStatusChanged?.('disconnected', {
+        status: 'disconnected',
+        message,
+        at: Date.now(),
+      });
       this.reconnectTimer = setTimeout(() => this.connect(), 5000);
     };
   }

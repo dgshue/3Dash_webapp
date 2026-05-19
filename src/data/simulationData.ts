@@ -321,6 +321,7 @@ export const SIMULATION_SETTINGS: AppSettings = {
     hudVisible: true,
     borderStyle: 'subtle',
     cornerRadius: 'round',
+    showTrackerLabels: false,
   },
   render: {
     edgeMode: 'enhanced',
@@ -343,6 +344,13 @@ export const SIMULATION_SETTINGS: AppSettings = {
       mobile: { zoom: true, rotate: true, pan: true },
     },
     homeView: null,
+  },
+  tracking: {
+    sigmaPos: 0.03,
+    sigmaVel: 0.10,
+    rFloor: 1.5,
+    floorHysteresisCycles: 3,
+    diagnosticsOverlay: false,
   },
   misc: {
     panelRatio: null,

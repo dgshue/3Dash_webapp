@@ -2,14 +2,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Server, Palette, Box, MonitorCloud, Hand, Cog, Info,
-  Lightbulb, LayoutTemplate, ChevronLeft, X,
+  LayoutDashboard, LayoutTemplate, ChevronLeft, X,
   Monitor, Smartphone, Search, RotateCw, Move,
   Github, HeartHandshake, Scale,
+  Radar, MapPin, AlertTriangle, GitFork,
 } from 'lucide-react';
-import { buildWsUrl, type HAConnectionStatus } from '../services/haWebSocket';
+import { buildWsUrl, type HAConnectionError, type HAConnectionStatus } from '../services/haWebSocket';
 import type { HASettings } from '../types';
 import { getConfig, resetConfig, updateConfig, exportBackup, importBackup } from '../services/configApi';
 import { clearSettings, getSetting, getSettings, updateSettings } from '../services/settingsStore';
+import { searchLocation, type GeocodingResult } from '../services/geocodingApi';
 import { useDemoMode } from '../contexts/DemoModeContext';
 import { useCameraControls, type CameraControlsFlags } from '../contexts/CameraControlsContext';
 import {
@@ -20,7 +22,7 @@ import {
 } from '../contexts/ThemeContext';
 import './SettingsModal.css';
 
-type Section = 'main' | 'connection' | 'appearance' | 'render' | 'environment' | 'controls' | 'system' | 'infos';
+type Section = 'main' | 'connection' | 'appearance' | 'render' | 'environment' | 'controls' | 'tracking' | 'system' | 'infos';
 
 interface Props {
   open: boolean;
@@ -87,8 +89,29 @@ interface Props {
   /* Status */
   lightsOnCount: number;
   haStatus: HAConnectionStatus;
+  /** Most recent connection error (if any). Cleared on successful (re)connect. */
+  haLastError?: HAConnectionError | null;
   modelStatus: string;
   modelStatusColor?: string;
+
+  /* Item counts surfaced from configRef in Dashboard. Used by the main
+   * settings page summary and the System status chips. */
+  itemCounts: {
+    lights: number;
+    displays: number;
+    walls: number;
+    tubes: number;
+    trackers: number;
+    scanners: number;
+  };
+
+  /* True when the Bermuda solver loop is actively producing positions. */
+  solverRunning: boolean;
+
+  /* Reset all in-flight tracker Kalman filters — called after the user
+   * adjusts σ_pos / σ_vel / r_floor to make the new values take effect
+   * immediately rather than waiting for the natural filter steady state. */
+  onResetKalmanFilters: () => void;
 }
 
 const SECTIONS: { key: Section; label: string; icon: typeof Server }[] = [
@@ -97,6 +120,7 @@ const SECTIONS: { key: Section; label: string; icon: typeof Server }[] = [
   { key: 'render', label: 'Render', icon: Box },
   { key: 'environment', label: 'Environment', icon: MonitorCloud },
   { key: 'controls', label: 'Controls', icon: Hand },
+  { key: 'tracking', label: 'Tracking', icon: Radar },
   { key: 'system', label: 'System', icon: Cog },
   { key: 'infos', label: 'Infos', icon: Info },
 ];
@@ -138,8 +162,12 @@ export default function SettingsModal({
   onHASettingsSave,
   lightsOnCount,
   haStatus,
+  haLastError,
   modelStatus,
   modelStatusColor,
+  itemCounts,
+  solverRunning,
+  onResetKalmanFilters,
 }: Props) {
   const navigate = useNavigate();
   const { demoMode, setDemoMode } = useDemoMode();
@@ -162,6 +190,16 @@ export default function SettingsModal({
   const [importStatus, setImportStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [homeViewReset, setHomeViewReset] = useState<'idle' | 'done'>('idle');
 
+  // Environment — geolocation + address lookup
+  const [geoStatus, setGeoStatus] = useState<'idle' | 'looking' | 'denied' | 'unavailable'>('idle');
+  const [addressQuery, setAddressQuery] = useState('');
+  const [addressResults, setAddressResults] = useState<GeocodingResult[]>([]);
+  const [addressStatus, setAddressStatus] = useState<'idle' | 'searching' | 'empty' | 'error'>('idle');
+
+  // Tracking — Kalman + hysteresis (lifted from PositionKalman/Dashboard constants)
+  const [tracking, setTracking] = useState(() => getSettings().tracking);
+  const [kalmanReset, setKalmanReset] = useState<'idle' | 'done'>('idle');
+
   // Appearance state
   const [bgColor, setBgColor] = useState(() => getSettings().appearance.bgColor);
   const [primaryAccent, setPrimaryAccent] = useState(() => getSettings().appearance.primaryAccent);
@@ -174,6 +212,7 @@ export default function SettingsModal({
   const [hudVisible, setHudVisible] = useState(() => getSettings().appearance.hudVisible);
   const [borderStyle, setBorderStyle] = useState(() => getSettings().appearance.borderStyle);
   const [cornerRadius, setCornerRadius] = useState(() => getSettings().appearance.cornerRadius);
+  const [showTrackerLabels, setShowTrackerLabels] = useState(() => getSettings().appearance.showTrackerLabels);
 
   const updateAppearance = useCallback((patch: Record<string, unknown>) => {
     updateSettings('appearance', patch as any);
@@ -271,6 +310,98 @@ export default function SettingsModal({
       resetError();
     };
   }, [haUrl, haPort, haToken, onHASettingsSave]);
+
+  // B4: Use browser geolocation to fill lat/lon. Falls back to existing
+  // manual inputs if the user denies the prompt or the browser doesn't
+  // support it (some self-signed-cert + iOS combos block it).
+  const handleUseMyLocation = useCallback(() => {
+    if (!('geolocation' in navigator)) {
+      setGeoStatus('unavailable');
+      setTimeout(() => setGeoStatus('idle'), 2500);
+      return;
+    }
+    setGeoStatus('looking');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = parseFloat(pos.coords.latitude.toFixed(4));
+        const lng = parseFloat(pos.coords.longitude.toFixed(4));
+        setLatitude(String(lat));
+        setLongitude(String(lng));
+        updateConfig({ location: { latitude: lat, longitude: lng } });
+        setGeoStatus('idle');
+      },
+      () => {
+        setGeoStatus('denied');
+        setTimeout(() => setGeoStatus('idle'), 2500);
+      },
+      { enableHighAccuracy: false, timeout: 6000, maximumAge: 300_000 },
+    );
+  }, []);
+
+  // C3: Address / city → lat/lon via Open-Meteo geocoding.
+  const handleAddressSearch = useCallback(async () => {
+    const q = addressQuery.trim();
+    if (!q) return;
+    setAddressStatus('searching');
+    setAddressResults([]);
+    try {
+      const results = await searchLocation(q, 5);
+      if (results.length === 0) {
+        setAddressStatus('empty');
+      } else {
+        setAddressResults(results);
+        setAddressStatus('idle');
+      }
+    } catch {
+      setAddressStatus('error');
+    }
+  }, [addressQuery]);
+
+  const pickGeoResult = useCallback((r: GeocodingResult) => {
+    const lat = parseFloat(r.latitude.toFixed(4));
+    const lng = parseFloat(r.longitude.toFixed(4));
+    setLatitude(String(lat));
+    setLongitude(String(lng));
+    updateConfig({ location: { latitude: lat, longitude: lng } });
+    setAddressResults([]);
+    setAddressQuery(r.label);
+    setAddressStatus('idle');
+  }, []);
+
+  // C1: Tracking section helpers — persist + bubble.
+  const updateTracking = useCallback(<K extends keyof typeof tracking>(key: K, value: typeof tracking[K]) => {
+    setTracking((t) => {
+      const next = { ...t, [key]: value };
+      updateSettings('tracking', { [key]: value } as Partial<typeof t>);
+      return next;
+    });
+  }, []);
+
+  const handleResetKalman = useCallback(() => {
+    onResetKalmanFilters();
+    setKalmanReset('done');
+    setTimeout(() => setKalmanReset('idle'), 1500);
+  }, [onResetKalmanFilters]);
+
+  // B1: detect the "HTTPS page → plain-HTTP HA" mistake by inspecting the
+  // current URL/port the user has typed. Show a warning under the field.
+  const haUrlWarning: string | null = (() => {
+    if (typeof window === 'undefined' || window.location.protocol !== 'https:') return null;
+    if (!haUrl) return null;
+    // If the URL has an explicit http:// prefix, that's a clear conflict.
+    if (haUrl.startsWith('http://')) {
+      return 'HTTPS page can’t open ws:// to a plain-HTTP HA. Use an https:// URL.';
+    }
+    // If the URL looks like a bare IP/hostname AND the port is the default HA
+    // HTTP port (8123), the WSS handshake will fail against a non-TLS listener.
+    // Hosts that include a TLD that suggests TLS (e.g. ha.shuehome.net) on
+    // port 443 / 8443 are fine.
+    const looksLan = /^\d{1,3}(\.\d{1,3}){3}$/.test(haUrl) || haUrl.endsWith('.local') || haUrl.endsWith('.lan');
+    if (looksLan && (haPort === 8123 || haPort === 80)) {
+      return 'HTTPS page can’t open wss:// to plain-HTTP HA on this LAN host. Use your public HTTPS URL (e.g. Nabu Casa or a reverse proxy).';
+    }
+    return null;
+  })();
 
   const compassRef = useRef<SVGSVGElement>(null);
   const draggingRef = useRef(false);
@@ -376,14 +507,27 @@ export default function SettingsModal({
                 ))}
               </div>
 
+              {/* C2: item-count summary across all object types the editor manages.
+                  Replaces the implicit "Lights only" assumption that the
+                  old Edit Lights button reinforced. */}
+              <div className="settings-counts-row">
+                <span className="settings-count-chip" title="Lights configured">{itemCounts.lights} Lights</span>
+                <span className="settings-count-chip" title="Displays configured">{itemCounts.displays} Displays</span>
+                <span className="settings-count-chip" title="Shadow walls configured">{itemCounts.walls} Walls</span>
+                <span className="settings-count-chip" title="Tubes configured">{itemCounts.tubes} Tubes</span>
+                <span className="settings-count-chip" title="BLE trackers configured">{itemCounts.trackers} Trackers</span>
+                <span className="settings-count-chip" title="BLE scanners configured">{itemCounts.scanners} Scanners</span>
+              </div>
+
               <div className="settings-bottom-actions">
                 <Link
                   to="/editor"
                   className="settings-big-btn"
                   onClick={onClose}
+                  title="Edit lights, displays, walls, tubes, trackers, and scanners"
                 >
-                  <Lightbulb size={20} strokeWidth={1.5} />
-                  <span>Edit Lights</span>
+                  <LayoutDashboard size={20} strokeWidth={1.5} />
+                  <span>Edit Scene</span>
                 </Link>
                 <button
                   className="settings-big-btn"
@@ -447,6 +591,13 @@ export default function SettingsModal({
                         />
                       </div>
                     </div>
+                    {/* B1: HTTPS-page-to-plain-HTTP-HA warning */}
+                    {haUrlWarning && (
+                      <div className="settings-inline-warning">
+                        <AlertTriangle size={14} strokeWidth={1.5} />
+                        <span>{haUrlWarning}</span>
+                      </div>
+                    )}
                     <div className="settings-ha-field">
                       <label className="settings-ha-label">Token</label>
                       <input
@@ -469,6 +620,21 @@ export default function SettingsModal({
                     </button>
                   </div>
                 </div>
+
+                {/* C4: surface the last connection error so the user doesn't
+                    have to open devtools to see why HA dropped. */}
+                {haStatus !== 'connected' && haLastError && (
+                  <div className="settings-section">
+                    <div className="settings-section-label">Last Error</div>
+                    <div className="settings-error-block">
+                      <div className="settings-error-status">{haLastError.status}</div>
+                      <div className="settings-error-message">{haLastError.message}</div>
+                      <div className="settings-error-when">
+                        {new Date(haLastError.at).toLocaleTimeString()}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -620,6 +786,21 @@ export default function SettingsModal({
                   <div className="settings-mode-toggle">
                     <button className={`settings-mode-btn${hudVisible ? ' active' : ''}`} onClick={() => { setHudVisible(true); updateAppearance({ hudVisible: true }); }}>Visible</button>
                     <button className={`settings-mode-btn${!hudVisible ? ' active' : ''}`} onClick={() => { setHudVisible(false); updateAppearance({ hudVisible: false }); }}>Hidden</button>
+                  </div>
+                </div>
+
+                {/* D1: floating labels above tracker orbs */}
+                <div className="settings-section">
+                  <div className="settings-section-label">Tracker Labels</div>
+                  <div className="settings-mode-toggle">
+                    <button
+                      className={`settings-mode-btn${showTrackerLabels ? ' active' : ''}`}
+                      onClick={() => { setShowTrackerLabels(true); updateAppearance({ showTrackerLabels: true }); }}
+                    >On</button>
+                    <button
+                      className={`settings-mode-btn${!showTrackerLabels ? ' active' : ''}`}
+                      onClick={() => { setShowTrackerLabels(false); updateAppearance({ showTrackerLabels: false }); }}
+                    >Off</button>
                   </div>
                 </div>
 
@@ -816,6 +997,72 @@ export default function SettingsModal({
                       />
                     </div>
                   </div>
+
+                  {/* B4: one-click "use my browser location" */}
+                  <div className="settings-actions" style={{ marginTop: 8 }}>
+                    <button
+                      className="settings-action-btn"
+                      onClick={handleUseMyLocation}
+                      disabled={geoStatus === 'looking'}
+                      title="Read your latitude/longitude from the browser"
+                    >
+                      <MapPin size={14} strokeWidth={1.5} />
+                      <span style={{ marginLeft: 6 }}>
+                        {geoStatus === 'looking' ? 'Looking…'
+                          : geoStatus === 'denied' ? '✗ Permission denied'
+                          : geoStatus === 'unavailable' ? '✗ Unavailable'
+                          : 'Use my location'}
+                      </span>
+                    </button>
+                  </div>
+
+                  {/* C3: search-by-address fallback for users who don't want
+                      to grant geolocation. Uses Open-Meteo's free endpoint. */}
+                  <div className="settings-actions" style={{ marginTop: 8, gap: 4 }}>
+                    <input
+                      className="settings-ha-input"
+                      type="text"
+                      placeholder="Search city or address…"
+                      value={addressQuery}
+                      onChange={(e) => setAddressQuery(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleAddressSearch(); }}
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      className="settings-action-btn"
+                      onClick={handleAddressSearch}
+                      disabled={!addressQuery.trim() || addressStatus === 'searching'}
+                    >
+                      {addressStatus === 'searching' ? '…' : 'Search'}
+                    </button>
+                  </div>
+                  {addressStatus === 'empty' && (
+                    <div className="settings-inline-warning" style={{ marginTop: 4 }}>
+                      <span>No matches. Try a city name (e.g. "Greensboro NC").</span>
+                    </div>
+                  )}
+                  {addressStatus === 'error' && (
+                    <div className="settings-inline-warning" style={{ marginTop: 4 }}>
+                      <AlertTriangle size={14} strokeWidth={1.5} />
+                      <span>Search failed. Open-Meteo may be unreachable.</span>
+                    </div>
+                  )}
+                  {addressResults.length > 0 && (
+                    <div className="settings-geo-results">
+                      {addressResults.map((r) => (
+                        <button
+                          key={`${r.latitude},${r.longitude}`}
+                          className="settings-geo-result"
+                          onClick={() => pickGeoResult(r)}
+                        >
+                          <span>{r.label}</span>
+                          <span className="settings-geo-coords">
+                            {r.latitude.toFixed(2)}, {r.longitude.toFixed(2)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="settings-section">
@@ -951,19 +1198,143 @@ export default function SettingsModal({
               </div>
             )}
 
-            {/* System */}
+            {/* Tracking (C1, B2) — BLE solver tuning + diagnostics overlay default */}
+            {(section === 'tracking' || (animating && prevSection === 'tracking')) && (
+              <div className="settings-page">
+                <div className="settings-section">
+                  <div className="settings-section-label">Solver Status</div>
+                  <div className="settings-status" style={{ marginTop: 0 }}>
+                    <div className="settings-status-chip">
+                      Trackers <span>{itemCounts.trackers}</span>
+                    </div>
+                    <div className="settings-status-chip">
+                      Scanners <span>{itemCounts.scanners}</span>
+                    </div>
+                    <div className="settings-status-chip">
+                      Solver
+                      <span style={{ color: solverRunning ? 'var(--green)' : 'var(--yellow)' }}>
+                        {solverRunning ? 'running' : 'idle'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-label">
+                    Position Smoothing (σ_pos)
+                    <span className="settings-section-meta"> — lower = smoother, slower</span>
+                  </div>
+                  <div className="settings-scrubber">
+                    <input
+                      type="range" min={0.01} max={0.30} step={0.01}
+                      value={tracking.sigmaPos}
+                      onChange={(e) => updateTracking('sigmaPos', parseFloat(e.target.value))}
+                    />
+                    <span className="settings-scrubber-time">{tracking.sigmaPos.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-label">
+                    Velocity Damping (σ_vel)
+                    <span className="settings-section-meta"> — lower = less chasing of jitter</span>
+                  </div>
+                  <div className="settings-scrubber">
+                    <input
+                      type="range" min={0.05} max={1.00} step={0.05}
+                      value={tracking.sigmaVel}
+                      onChange={(e) => updateTracking('sigmaVel', parseFloat(e.target.value))}
+                    />
+                    <span className="settings-scrubber-time">{tracking.sigmaVel.toFixed(2)}</span>
+                  </div>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-label">
+                    Measurement Trust Floor (R_floor)
+                    <span className="settings-section-meta"> — higher = trust trilat less</span>
+                  </div>
+                  <div className="settings-scrubber">
+                    <input
+                      type="range" min={0.5} max={4.0} step={0.1}
+                      value={tracking.rFloor}
+                      onChange={(e) => updateTracking('rFloor', parseFloat(e.target.value))}
+                    />
+                    <span className="settings-scrubber-time">{tracking.rFloor.toFixed(1)} m</span>
+                  </div>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-label">
+                    Floor Hysteresis
+                    <span className="settings-section-meta"> — cycles before switching floors</span>
+                  </div>
+                  <div className="settings-scrubber">
+                    <input
+                      type="range" min={1} max={10} step={1}
+                      value={tracking.floorHysteresisCycles}
+                      onChange={(e) => updateTracking('floorHysteresisCycles', parseInt(e.target.value))}
+                    />
+                    <span className="settings-scrubber-time">{tracking.floorHysteresisCycles}</span>
+                  </div>
+                </div>
+
+                {/* B2: diagnostics overlay default. The AnchorPanel can still
+                    toggle in-session; this is the persistent default for the
+                    next Dashboard mount. */}
+                <div className="settings-section">
+                  <div className="settings-section-label">Diagnostics Overlay</div>
+                  <div className="settings-mode-toggle">
+                    <button
+                      className={`settings-mode-btn${tracking.diagnosticsOverlay ? ' active' : ''}`}
+                      onClick={() => updateTracking('diagnosticsOverlay', true)}
+                    >On</button>
+                    <button
+                      className={`settings-mode-btn${!tracking.diagnosticsOverlay ? ' active' : ''}`}
+                      onClick={() => updateTracking('diagnosticsOverlay', false)}
+                    >Off</button>
+                  </div>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-label">Apply Now</div>
+                  <div className="settings-actions">
+                    <button
+                      className={`settings-action-btn${kalmanReset === 'done' ? ' ha-ok' : ''}`}
+                      onClick={handleResetKalman}
+                      disabled={kalmanReset === 'done'}
+                      title="Drop all in-flight Kalman filters so the new tuning takes effect on the next solver cycle"
+                    >
+                      {kalmanReset === 'done' ? '✓ Reset' : 'Reset Kalman Filters'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Infos */}
             {(section === 'infos' || (animating && prevSection === 'infos')) && (
               <div className="settings-page">
                 <div className="settings-section">
                   <div className="settings-section-label">Repository</div>
                   <a
                     className="settings-action-btn settings-repo-link"
-                    href="https://github.com/Kdcius/3Dash_webapp"
+                    href="https://github.com/dgshue/3Dash_webapp"
                     target="_blank"
                     rel="noopener noreferrer"
                   >
                     <Github size={16} strokeWidth={1.5} />
-                    <span>3Dash_webapp</span>
+                    <span>dgshue/3Dash_webapp (BLE positioning fork)</span>
+                  </a>
+                  <a
+                    className="settings-action-btn settings-repo-link"
+                    style={{ marginTop: 6 }}
+                    href="https://github.com/Kdcius/3Dash_webapp"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <GitFork size={16} strokeWidth={1.5} />
+                    <span>Upstream: Kdcius/3Dash_webapp</span>
                   </a>
                 </div>
 
@@ -979,7 +1350,7 @@ export default function SettingsModal({
 
                 <div className="settings-infos-footer">
                   <HeartHandshake size={16} strokeWidth={1.5} />
-                  <span>Built with love in Montpellier</span>
+                  <span>Upstream built with love in Montpellier</span>
                 </div>
               </div>
             )}
@@ -1021,10 +1392,14 @@ export default function SettingsModal({
                 </div>
 
                 <div className="settings-section">
-                  <div className="settings-section-label">DEBUG</div>
+                  <div className="settings-section-label">Debug</div>
                   <div className="settings-actions">
-                    <button className="settings-action-btn" onClick={() => { onDebugToggle(); onClose(); }}>
-                      Render
+                    <button
+                      className="settings-action-btn"
+                      onClick={() => { onDebugToggle(); onClose(); }}
+                      title="Open the renderer stats / frame timing panel"
+                    >
+                      Open Render Debug Panel
                     </button>
                   </div>
                 </div>
@@ -1065,9 +1440,23 @@ export default function SettingsModal({
 
                 <div className="settings-divider" />
 
+                {/* A3: status chips now include the BLE side of the app
+                    (trackers, scanners, solver) — not just lights. */}
                 <div className="settings-status">
                   <div className="settings-status-chip">
                     Lights on <span>{lightsOnCount}</span>
+                  </div>
+                  <div className="settings-status-chip">
+                    Trackers <span>{itemCounts.trackers}</span>
+                  </div>
+                  <div className="settings-status-chip">
+                    Scanners <span>{itemCounts.scanners}</span>
+                  </div>
+                  <div className="settings-status-chip">
+                    Solver
+                    <span style={{ color: solverRunning ? 'var(--green)' : 'var(--yellow)' }}>
+                      {solverRunning ? 'running' : 'idle'}
+                    </span>
                   </div>
                   <div className="settings-status-chip">
                     HA <span style={{ color: demoMode ? 'var(--orange)' : haStatusColor }}>

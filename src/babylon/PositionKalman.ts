@@ -60,10 +60,14 @@ export class PositionKalman {
   /** Per-axis process noise (σ per √Δt). Tune later if jitter or lag is wrong. */
   private sigmaPos: number;
   private sigmaVel: number;
+  /** Measurement-noise floor (m). Clamp residual so the filter never trusts a
+   *  measurement better than this — RSSI noise is fundamentally above 0.5m. */
+  private rFloor: number;
 
-  constructor(sigmaPos = DEFAULT_SIGMA_POS, sigmaVel = DEFAULT_SIGMA_VEL) {
+  constructor(sigmaPos = DEFAULT_SIGMA_POS, sigmaVel = DEFAULT_SIGMA_VEL, rFloor = DEFAULT_R_FLOOR) {
     this.sigmaPos = sigmaPos;
     this.sigmaVel = sigmaVel;
+    this.rFloor = rFloor;
   }
 
   isInitialized(): boolean { return this.initialized; }
@@ -152,7 +156,7 @@ export class PositionKalman {
     // Map residual to per-axis measurement σ. Floor + ceil prevent the
     // filter from freezing on a single great reading or chasing junk.
     const sigmaM = Math.min(
-      Math.max(residualMeters, DEFAULT_R_FLOOR),
+      Math.max(residualMeters, this.rFloor),
       DEFAULT_R_CEIL,
     );
     const rDiag = sigmaM * sigmaM;

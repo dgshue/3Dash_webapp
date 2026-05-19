@@ -24,6 +24,9 @@ export interface AppearanceSettings {
   hudVisible: boolean;
   borderStyle: 'subtle' | 'large' | 'none';
   cornerRadius: 'sharp' | 'soft' | 'round';
+  /** Float a text label above each tracker orb (always camera-facing).
+   *  Off by default — users with many trackers can opt in. */
+  showTrackerLabels: boolean;
 }
 
 export interface RenderSettings {
@@ -58,6 +61,19 @@ export interface ControlsSettings {
   homeView: HomeViewPose | null;
 }
 
+export interface TrackingSettings {
+  /** Kalman position process noise σ per √Δt (m). Lower = smoother but more lag. */
+  sigmaPos: number;
+  /** Kalman velocity process noise σ per √Δt (m/s). Lower = assume target moves slowly. */
+  sigmaVel: number;
+  /** Minimum measurement noise σ (m) — don't trust trilateration better than this. */
+  rFloor: number;
+  /** Consecutive same-floor sensor reports required before switching tracker floor. */
+  floorHysteresisCycles: number;
+  /** Render the diagnostics overlay (per-anchor distance spheres + confidence sphere). */
+  diagnosticsOverlay: boolean;
+}
+
 export interface MiscSettings {
   panelRatio: number | null;
 }
@@ -70,6 +86,7 @@ export interface AppSettings {
   render: RenderSettings;
   environment: EnvironmentSettings;
   controls: ControlsSettings;
+  tracking: TrackingSettings;
   misc: MiscSettings;
 }
 
@@ -97,6 +114,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     hudVisible: true,
     borderStyle: 'subtle',
     cornerRadius: 'soft',
+    showTrackerLabels: false,
   },
   render: {
     edgeMode: 'enhanced',
@@ -119,6 +137,16 @@ const DEFAULT_SETTINGS: AppSettings = {
       mobile: { zoom: true, rotate: true, pan: true },
     },
     homeView: null,
+  },
+  // BLE tracker solver defaults. Source of truth for these used to be
+  // constants in PositionKalman.ts and Dashboard.tsx; lifting them into
+  // settings lets the user tune from the UI without a code commit.
+  tracking: {
+    sigmaPos: 0.03,
+    sigmaVel: 0.10,
+    rFloor: 1.5,
+    floorHysteresisCycles: 3,
+    diagnosticsOverlay: false,
   },
   misc: {
     panelRatio: null,
@@ -257,6 +285,7 @@ export function getSettings(): AppSettings {
       render: { ...DEFAULT_SETTINGS.render, ...parsed.render },
       environment: { ...DEFAULT_SETTINGS.environment, ...parsed.environment },
       controls: { ...DEFAULT_SETTINGS.controls, ...parsed.controls },
+      tracking: { ...DEFAULT_SETTINGS.tracking, ...parsed.tracking },
       misc: { ...DEFAULT_SETTINGS.misc, ...parsed.misc },
     };
   } catch {
