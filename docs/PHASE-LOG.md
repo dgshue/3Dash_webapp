@@ -417,3 +417,75 @@ rendering wasn't added in this commit.
   glide rather than teleport.
 - Confidence ellipsoid (Job 5) and a UI toggle for
   `setAnchorDebugRadius` remain on the followup list.
+
+## Phase 0 — Anchor discovery fix (2026-05-19)
+
+**Already shipped via commit `3b8473a` (Phase C era).** The bug
+described in `ANCHOR-PLACEMENT-DESIGN.md` — that only 3 of 7 Bermuda
+scanners were surfaced as anchors — was fixed before the design doc
+was written. `parseBermudaDump` in `src/services/bermudaApi.ts:164`
+filters by `dev._is_scanner === true`, and `Dashboard.tsx:1402-1422`
+merges all newly-discovered scanners into `config.anchors`. Design
+doc updated to mark Phase 0 SHIPPED. The visible "only 3 anchors"
+gap was the AnchorList UI in `/editor` rendering against stale
+localStorage from the Phase B era — Phase 1 fixes the rendering
+surface by lifting anchors into the dashboard itself.
+
+## Phase 1 — AnchorPanel dashboard widget (2026-05-19)
+
+**Shipped.** Commit `7a99ea5 feat(phase-1): AnchorPanel dashboard
+widget + click-to-place`. Five new artifacts:
+
+- `src/components/AnchorPanel.tsx` (180 LOC): floating panel,
+  floor-grouped anchor list, live indicator dot, per-row Place /
+  Re-place / Cancel button, hide toggle, placed-count progress bar,
+  Calibrate + Diagnostics buttons (stubs for Phase 3/5).
+- `src/components/AnchorPanel.css`: cyan-themed panel chrome,
+  top-right toggle button with red badge counting unplaced anchors,
+  centered "Click on the model to place X" banner, mobile responsive,
+  hidden in `body.embedded-readonly`.
+- `src/types/index.ts`: `AnchorConfig` gains optional `placed` +
+  `hidden`. Pre-existing user-placed anchors (placed === undefined)
+  treated as placed for back-compat.
+- `src/pages/Dashboard/Dashboard.tsx`: imports AnchorPanel +
+  `enterPickMode` + `setAnchorPosition`, adds three pieces of state
+  (anchorPanelOpen, placingAnchorId, dashboardAnchors) plus a
+  liveAnchorIds set that updates only when scanner membership
+  changes between polls (no per-poll React re-renders), wires
+  handleAnchorPlace through `babylon/PickMode.ts` so the cyan pin
+  jumps to the picked spot and the config persists with placed=true.
+  Cleanup cancels in-flight pick-mode on unmount.
+- `src/pages/ConfigEditor/ConfigEditor.tsx`: `handleSaveAnchor`
+  marks `placed: true` on every save so legacy /editor adds stay
+  consistent with the new flag.
+
+Solver guard: dashboard filters anchors by `!hidden && placed !== false`
+so the four stacked-near-origin auto-discovery additions cannot
+corrupt centroid / trilateration until the user places them.
+
+Build clean (`vite build` 36–67 s, no TS errors). Pushed to
+`origin/dev`; Portainer stack 157 will rebuild within 5 min.
+
+## Phase 2 — Per-anchor calibration values (2026-05-19)
+
+**Shipped.** Commit `39d53c0 feat(phase-2): per-anchor calibration
+values + trustWeight in solver`. Three files touched:
+
+- `src/types/index.ts`: `AnchorConfig` gains optional `refPower`
+  (-55 dBm @ 1m default), `pathLossExp` (3.0), `antennaGainDbi` (0),
+  `trustWeight` (1.0). Defaults centralized in exported constant
+  `ANCHOR_CALIBRATION_DEFAULTS`.
+- `src/components/AnchorForm.tsx`: new "Calibration (advanced)"
+  accordion (collapsed by default). Number inputs with placeholders
+  showing defaults, so leaving blank means "use default" rather than
+  "store 0". Sub-labels explain typical ranges and what consumes
+  each value.
+- `src/pages/Dashboard/Dashboard.tsx`: `trustWeight` wired into both
+  solver paths. Trilateration multiplies it through the same-floor /
+  cross-floor weight; weighted-centroid multiplies it through the
+  inverse-distance weight. Defaults to 1.0 so existing anchors don't
+  change behavior.
+
+`refPower`, `pathLossExp`, `antennaGainDbi` are stored but not yet
+consumed — reserved for Phase 4 path-loss / k-NN math. Build clean
+(`vite build` 37 s, no TS errors). Pushed to `origin/dev`.
