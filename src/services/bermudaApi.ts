@@ -57,6 +57,10 @@ export interface BermudaDevice {
   adverts?: Record<string, BermudaAdvert>;
 }
 
+/** Normalized shape returned by dumpBermudaDevices — always a flat device
+ *  map keyed by lowercased address. dumpBermudaDevices unwraps whichever
+ *  shape Bermuda's release uses (some versions wrap in `service_response`,
+ *  current versions return the map directly under `result.response`). */
 export interface BermudaDumpResponse {
   service_response: Record<string, BermudaDevice>;
 }
@@ -104,22 +108,46 @@ export interface ParsedBermudaAnchor {
 export async function dumpBermudaDevices(ha: HALike | null): Promise<BermudaDumpResponse | null> {
   if (!ha || !ha.isConnected) return null;
   try {
-    // Per HA WS API: call_service with return_response: true puts the service
-    // response in result.response when success === true.
+    // Verified against ha.shuehome.net 2026-05-19 (Bermuda v0.8.5+, HA 2026.x):
+    // ha.request returns `result.response` directly — for `call_service` +
+    // `return_response: true`, that response IS the flat device map keyed
+    // by MAC address (e.g. `{ "b8:fb:...": {name, _is_scanner, adverts}, ... }`).
+    // No outer `service_response` wrapper in this Bermuda version.
+    //
+    // Older Bermuda releases (pre-0.8) did wrap in `service_response`, so we
+    // handle both. The previous code path always looked for the wrapper and
+    // silently returned 0 scanners with current Bermuda — that's the bug
+    // 2026-05-19 traffic exposed.
     const result = await ha.request({
       type: 'call_service',
       domain: 'bermuda',
       service: 'dump_devices',
       return_response: true,
-    }) as { response?: BermudaDumpResponse } | BermudaDumpResponse | null;
-    if (!result) return null;
-    // The HA WS payload comes back as { response: {...} } when return_response
-    // is set; older HA versions may inline service_response directly.
-    if ('response' in (result as object) && (result as { response: unknown }).response) {
-      return (result as { response: BermudaDumpResponse }).response;
+    });
+    if (!result || typeof result !== 'object') return null;
+    const r = result as Record<string, unknown>;
+    // Case A (current): flat device map at the top level of `result`
+    //   (which is what ha.request returns when WS strips `response`). Detect
+    //   by presence of MAC-like keys.
+    const hasMacKeys = Object.keys(r).some((k) => /^[0-9a-f:]{17}$/i.test(k));
+    if (hasMacKeys) {
+      return { service_response: r as Record<string, BermudaDevice> };
     }
-    if ('service_response' in (result as object)) {
-      return result as BermudaDumpResponse;
+    // Case B (older Bermuda): wrapped in service_response
+    if (r.service_response && typeof r.service_response === 'object') {
+      return { service_response: r.service_response as Record<string, BermudaDevice> };
+    }
+    // Case C: nested under response (HA WS shape pre-unwrap)
+    if (r.response && typeof r.response === 'object') {
+      const resp = r.response as Record<string, unknown>;
+      if (resp.service_response && typeof resp.service_response === 'object') {
+        return { service_response: resp.service_response as Record<string, BermudaDevice> };
+      }
+      // response itself is the flat map
+      const hasMacKeysInner = Object.keys(resp).some((k) => /^[0-9a-f:]{17}$/i.test(k));
+      if (hasMacKeysInner) {
+        return { service_response: resp as Record<string, BermudaDevice> };
+      }
     }
     return null;
   } catch (err) {
