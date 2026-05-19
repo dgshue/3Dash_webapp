@@ -11,12 +11,21 @@ interface Props {
   liveDeviceIds: Set<string>;
   /** Anchor currently in pick-mode (highlighted, "click on the model"). */
   placingDeviceId: string | null;
+  /** Phase 5: per-anchor last-seen ms-since-epoch. Stale anchors get a
+   *  warning. Keyed by anchor deviceId (lowercase). */
+  anchorLastSeen?: Record<string, number>;
+  /** Phase 5: whether the diagnostics overlay is currently on. */
+  diagnosticsOn?: boolean;
   onPlace: (deviceId: string) => void;
   onCancelPlace: () => void;
   onToggleHidden: (deviceId: string) => void;
   onCalibrate?: () => void;
   onDiagnostics?: () => void;
 }
+
+/** Phase 5: an anchor is "stale" if we haven't seen an advert from it in
+ *  this many ms. 5 minutes matches the design doc. */
+const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
 interface FloorGroup {
   floor: string;
@@ -48,6 +57,8 @@ export default function AnchorPanel({
   anchors,
   liveDeviceIds,
   placingDeviceId,
+  anchorLastSeen,
+  diagnosticsOn,
   onPlace,
   onCancelPlace,
   onToggleHidden,
@@ -116,9 +127,21 @@ export default function AnchorPanel({
               </div>
               {g.anchors.map((a) => {
                 const isPlacing = placingDeviceId === a.deviceId;
-                const isLive = liveDeviceIds.has(a.deviceId.toLowerCase());
+                const idLower = a.deviceId.toLowerCase();
+                const isLive = liveDeviceIds.has(idLower);
                 const isPlaced = a.placed !== false;
                 const isHidden = a.hidden === true;
+                // Phase 5: staleness — no advert in 5+ minutes.
+                const lastSeen = anchorLastSeen?.[idLower];
+                const staleAgeMs = lastSeen !== undefined ? Date.now() - lastSeen : Infinity;
+                const isStale = !isLive && staleAgeMs > STALE_THRESHOLD_MS;
+                const statusTitle = isLive
+                  ? 'Live (advert in last poll)'
+                  : isStale
+                    ? `Stale — last seen ${Math.round(staleAgeMs / 60000)} min ago`
+                    : lastSeen !== undefined
+                      ? `Quiet — last seen ${Math.round(staleAgeMs / 1000)}s ago`
+                      : 'No advert yet';
                 return (
                   <div
                     key={a.deviceId}
@@ -129,12 +152,21 @@ export default function AnchorPanel({
                     }
                   >
                     <div
-                      className={'anchor-row-status' + (isLive ? ' live' : '')}
-                      title={isLive ? 'Live (advert in last poll)' : 'No recent advert'}
+                      className={
+                        'anchor-row-status'
+                        + (isLive ? ' live' : '')
+                        + (isStale ? ' stale' : '')
+                      }
+                      title={statusTitle}
                     />
                     <div className="anchor-row-info">
                       <div className="anchor-row-label" title={a.deviceId}>
                         {a.label || a.deviceId}
+                        {isStale && (
+                          <span className="anchor-row-warning" title={statusTitle}>
+                            {' '}⚠
+                          </span>
+                        )}
                       </div>
                       <div className="anchor-row-meta">
                         {isPlaced
@@ -179,12 +211,12 @@ export default function AnchorPanel({
           )}
         </button>
         <button
-          className="anchor-panel-action"
+          className={'anchor-panel-action' + (diagnosticsOn ? ' active' : '')}
           onClick={onDiagnostics}
           disabled={!onDiagnostics}
-          title="Coming in Phase 5 — diagnostics overlay"
+          title="Toggle distance spheres around each anchor"
         >
-          Diagnostics
+          {diagnosticsOn ? 'Diagnostics: ON' : 'Diagnostics'}
         </button>
       </div>
     </div>

@@ -48,6 +48,7 @@ import {
   createAnchorMesh,
   disposeAllAnchors,
   setAnchorPosition,
+  setAnchorDebugRadius,
   type AnchorMeshMap,
 } from '../../babylon/AnchorMeshFactory';
 import { enterPickMode } from '../../babylon/PickMode';
@@ -123,6 +124,11 @@ export default function Dashboard() {
   const calibrationPickCancelRef = useRef<(() => void) | null>(null);
   /** Phase 4: cached fingerprints — refreshed each Bermuda poll. */
   const fingerprintsRef = useRef<ReturnType<typeof getFingerprints>>([]);
+  /** Phase 5: per-anchor last-seen ms-since-epoch (drives stale warning). */
+  const anchorLastSeenRef = useRef<Record<string, number>>({});
+  /** Phase 5: mirror of `diagnosticsOn` for the poll closure (state isn't
+   *  captured in the long-lived setInterval). */
+  const diagnosticsOnRef = useRef(false);
   const haRef = useRef<HALike | null>(null);
   const configRef = useRef<AppConfig | null>(null);
   const lastStatesRef = useRef<Record<string, HAState>>({});
@@ -189,6 +195,11 @@ export default function Dashboard() {
   const [liveAnchorIds, setLiveAnchorIds] = useState<Set<string>>(new Set());
   /** Phase 3: calibration wizard visibility. */
   const [calibrationWizardOpen, setCalibrationWizardOpen] = useState(false);
+  /** Phase 5: diagnostics overlay on/off. */
+  const [diagnosticsOn, setDiagnosticsOn] = useState(false);
+  /** Phase 5: ms-since-epoch each anchor last produced an advert.
+   *  Drives the panel's "stale anchor" warning. */
+  const [anchorLastSeen, setAnchorLastSeen] = useState<Record<string, number>>({});
   /** Phase 3: mirror configured trackers so the wizard's tracker dropdown
    *  refreshes when auto-discovery adds new entries. */
   const [dashboardTrackers, setDashboardTrackers] = useState<TrackerConfig[]>([]);
@@ -462,6 +473,21 @@ export default function Dashboard() {
       }
     }, 400);
   }, [sunLiveMode, sliderValue]);
+
+  // Phase 5: diagnostics state → ref bridge so the long-lived poll closure
+  // sees the latest value without re-creating the interval.
+  useEffect(() => {
+    diagnosticsOnRef.current = diagnosticsOn;
+    // Immediate sphere cleanup when turning OFF (don't wait for next poll).
+    if (!diagnosticsOn) {
+      const scene = sceneCtxRef.current?.scene;
+      if (scene) {
+        for (const entry of Object.values(anchorMapRef.current)) {
+          setAnchorDebugRadius(scene, entry, 0);
+        }
+      }
+    }
+  }, [diagnosticsOn]);
 
   // Phase 1: Anchor click-to-place handlers ---------------------------------
 
@@ -1535,6 +1561,27 @@ export default function Dashboard() {
           }
         }
 
+        // Phase 5: bump last-seen timestamp for every anchor that emitted an
+        // advert this poll. Anchors not in `parsed.anchors` keep their old
+        // last-seen — staleness is derived in the panel as (now - lastSeen).
+        {
+          const now = Date.now();
+          let anyUpdate = false;
+          for (const a of parsed.anchors) {
+            const id = a.address.toLowerCase();
+            if (anchorLastSeenRef.current[id] !== undefined) {
+              // Refresh quietly — no React re-render for every poll.
+              anchorLastSeenRef.current[id] = now;
+            } else {
+              anchorLastSeenRef.current = { ...anchorLastSeenRef.current, [id]: now };
+              anyUpdate = true;
+            }
+          }
+          // Push state only when a new anchor first appears, to keep
+          // re-renders rare.
+          if (anyUpdate) setAnchorLastSeen({ ...anchorLastSeenRef.current });
+        }
+
         if (parsed.anchors.length > 0) {
           const existing = configRef.current?.anchors || [];
           const existingIds = new Set(existing.map((a) => a.deviceId.toLowerCase()));
@@ -1774,6 +1821,34 @@ export default function Dashboard() {
               `pos=(${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)}) ` +
               `res=${residual.toFixed(2)}m`,
             );
+          }
+        }
+
+        // Phase 5: diagnostics overlay — render each anchor's translucent
+        // distance sphere using the closest tracker's measurement. When
+        // diagnostics turn off, drop all spheres in one pass.
+        {
+          const scene4 = sceneCtxRef.current?.scene;
+          if (scene4) {
+            for (const a of anchors) {
+              const entry = anchorMapRef.current[a.deviceId];
+              if (!entry) continue;
+              if (!diagnosticsOnRef.current) {
+                setAnchorDebugRadius(scene4, entry, 0);
+                continue;
+              }
+              // Closest tracker's distance to this anchor (across all
+              // configured trackers). Falls back to 0 (hide) if nothing has
+              // a reading.
+              let bestDist = Infinity;
+              for (const [, snap] of Object.entries(lastBermudaTrackersRef.current)) {
+                const d = snap.distanceByAnchor[a.deviceId];
+                if (typeof d === 'number' && isFinite(d) && d < bestDist) {
+                  bestDist = d;
+                }
+              }
+              setAnchorDebugRadius(scene4, entry, isFinite(bestDist) ? bestDist : 0);
+            }
           }
         }
       };
@@ -2297,6 +2372,8 @@ export default function Dashboard() {
           anchors={dashboardAnchors}
           liveDeviceIds={liveAnchorIds}
           placingDeviceId={placingAnchorId}
+          anchorLastSeen={anchorLastSeen}
+          diagnosticsOn={diagnosticsOn}
           onPlace={handleAnchorPlace}
           onCancelPlace={handleAnchorCancelPlace}
           onToggleHidden={handleAnchorToggleHidden}
@@ -2304,6 +2381,7 @@ export default function Dashboard() {
             setAnchorPanelOpen(false);
             setCalibrationWizardOpen(true);
           }}
+          onDiagnostics={() => setDiagnosticsOn((v) => !v)}
         />
         <CalibrationWizard
           open={calibrationWizardOpen}

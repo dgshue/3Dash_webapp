@@ -145,6 +145,22 @@
   box-shadow: 0 0 6px rgba(34, 211, 238, 0.7);
 }
 
+.anchor-row-status.stale {
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+}
+
+.anchor-row-warning {
+  color: #f59e0b;
+  font-size: 12px;
+}
+
+.anchor-panel-action.active {
+  background: rgba(34, 211, 238, 0.22);
+  color: #22d3ee;
+  border-color: rgba(34, 211, 238, 0.6);
+}
+
 .anchor-row-info {
   flex: 1;
   min-width: 0;
