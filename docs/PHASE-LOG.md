@@ -489,3 +489,137 @@ values + trustWeight in solver`. Three files touched:
 `refPower`, `pathLossExp`, `antennaGainDbi` are stored but not yet
 consumed — reserved for Phase 4 path-loss / k-NN math. Build clean
 (`vite build` 37 s, no TS errors). Pushed to `origin/dev`.
+
+## Phase 3 — Calibration wizard (2026-05-19)
+
+**Shipped.** Commit `8e8c595 feat(phase-3): 3-tap calibration wizard with
+localStorage fingerprint store`.
+
+New artifacts:
+- `src/types/index.ts`: `CalibrationFingerprint` interface — position,
+  floor, trackerEntityId, per-anchor rssi/distance maps, timestamp,
+  optional label.
+- `src/services/calibrationStore.ts`: versioned localStorage store
+  (`3dash.calibration`) with get / add / delete / clear /
+  exportJSON / importJSON. UUID generator with `crypto.randomUUID`
+  fallback for older WebViews.
+- `src/components/CalibrationWizard.{tsx,css}`: 3-step modal — pick
+  spot, confirm, snapshot per-anchor rssi+distance. Always-visible
+  fingerprint list lets the user delete bad entries without leaving
+  the wizard. Stops the user from saving when no anchors saw the
+  tracker.
+- `src/services/bermudaApi.ts`: `AnchorReading.rssi` added so the
+  wizard can snapshot dBm without re-walking the dump. Dashboard
+  poll stashes `lastBermudaTrackersRef.current[trackerId] = {
+  rssiByAnchor, distanceByAnchor }` each tick.
+- Dashboard wires `handleRequestCalibrationPick` (Promise wrapper
+  around `enterPickMode`) + `handleCaptureCalibrationSnapshot` into
+  the wizard. AnchorPanel "Calibrate" button now opens the wizard
+  and shows a fingerprint-count badge.
+
+Build clean (`vite build` 32 s, no TS errors).
+
+## Phase 4 — k-NN FingerprintSolver (2026-05-19)
+
+**Shipped.** Commit `26ae8ff feat(phase-4): k-NN FingerprintSolver as
+top of solver chain`.
+
+- `src/babylon/FingerprintSolver.ts`: `knnMatch` computes RMS dBm
+  distance between live reading and each fingerprint, inverse-distance
+  weights the top-K positions, returns position + confidence +
+  topDistance + qualifiedCount. `DEFAULT_DBM_HORIZON = 15` maps to
+  the confidence floor (0 at 15 dBm RMS away).
+- Dashboard solver chain reorganized — k-NN runs FIRST. Gate: ≥ 5
+  same-tracker, same-floor fingerprints AND ≥ 3 qualified neighbors
+  AND confidence ≥ 0.5. Otherwise falls through to trilateration
+  (Phase C) or weighted-centroid (Phase B). k-NN results feed
+  through the same Kalman filter for temporal smoothing — higher
+  confidence = tighter measurement noise (0.3 m at conf=1.0, 2.5 m
+  at conf=0).
+- Fingerprints filtered by `trackerEntityId` so Daniel's calibration
+  doesn't pollute Greyson's solve.
+- Fingerprint cache (`fingerprintsRef.current`) refreshed at the top
+  of each Bermuda poll — wizard mutates localStorage independently
+  of React state.
+- Debug log now reports `solver={knn|trilat|centroid}` so the user
+  can see which path won this poll.
+
+Build clean (`vite build` 31 s).
+
+## Phase 5 — Diagnostics overlay + stale-anchor warning (2026-05-19)
+
+**Shipped.** Commit `bd103d9 feat(phase-5): diagnostics overlay +
+stale-anchor warning`.
+
+- AnchorPanel "Diagnostics" button now functional. Toggles per-anchor
+  translucent distance spheres in 3D — each sphere radius is the
+  closest tracker's measured distance to that anchor (via
+  `AnchorMeshFactory.setAnchorDebugRadius`).
+- Sphere cleanup is immediate on toggle-OFF (drops all spheres in one
+  pass) rather than waiting for the next 3-s poll.
+- `diagnosticsOnRef` mirrors React state into the long-lived poll
+  closure so the toggle doesn't require restarting the interval.
+- Per-anchor staleness: `anchorLastSeenRef.current[id]` bumps each
+  poll the anchor emits any advert. Panel rows show an amber dot +
+  ⚠ when an anchor hasn't been heard in 5+ minutes. Tooltip shows
+  exactly how long ago — distinguishes "quiet" (seconds) from
+  "dead" (minutes).
+- New CSS: `.anchor-row-status.stale`, `.anchor-row-warning`,
+  `.anchor-panel-action.active`.
+
+Build clean.
+
+## Phase 6 — HA add-on packaged for ingress (2026-05-19)
+
+**Shipped.** Commit `3708eac feat(phase-6): HA add-on packaged for
+ingress + Companion App support`.
+
+This is the one that unblocks the user's "ultimate UX goal" — 3Dash
+loading in the HA Companion App on iOS. The Companion App refuses
+self-signed certs, so the previous iframe-at-port-8443 setup wouldn't
+load. Serving 3Dash through HA's ingress proxy fixes that.
+
+Changes in `3dash-addon/`:
+- `config.yaml`: `ingress: true`, `ingress_port: 8099`. Dropped the
+  `ports:` and `ports_description:` blocks entirely — no more host
+  port exposure. Added `panel_icon: mdi:floor-plan` +
+  `panel_title: "3Dash"` so it auto-appears in HA's left sidebar.
+  Version bumped to 1.3.0. `url:` retargeted at dgshue fork.
+- `Dockerfile`: clone from `dgshue/3Dash_webapp` `dev` branch
+  instead of upstream `kdcius/3Dash_webapp`. `REPO_URL` and
+  `REPO_REF` build args added so future PR-testing or tagged
+  installs don't need a Dockerfile edit.
+- `DOCS.md` rewritten — install / open via sidebar, walk through
+  anchor placement + calibration, mention no host port.
+
+`repository.json` already pointed at the dgshue fork (commit
+`528faed`). Install path: HA Supervisor → Add-on Store → Add
+Repository → `https://github.com/dgshue/3Dash_webapp` → install
+**3Dash** v1.3.0 → Companion App now loads it natively.
+
+## Phase 7 — Export/import + tracker confidence sphere (2026-05-19)
+
+**Shipped.** Commit `1468b26 feat(phase-7): export/import calibration
++ tracker confidence sphere`.
+
+Two pieces:
+
+**Export/import** — CalibrationWizard footer gains **Export** and
+**Import** buttons. Export downloads `3dash-calibration-<ts>.json`
+(uses the existing `exportFingerprintsJSON` helper). Import opens a
+file picker, prompts merge-vs-replace via `window.confirm`, restores
+via `importFingerprintsJSON`. Solves "redeploying the container nukes
+my fingerprints" — back them up, re-import.
+
+**Tracker confidence sphere** — `TrackerMeshFactory.setTrackerConfidence`
+creates a translucent sphere parented to the tracker mesh, diameter
+scales with Kalman 1-σ position uncertainty
+(`sqrt(positionVarianceTrace / 3)`). Capped at 5 m. Renders only when
+diagnostics overlay is ON; cleanup pass on toggle-OFF disposes it.
+
+Phase 7's design-doc stretch goal was a full covariance ellipsoid;
+downgraded to a symmetric sphere because the visual cue ("small
+sphere = confident, big sphere = unsure") reads instantly and the
+ellipsoid would require eigendecomposition for a marginal payoff.
+
+Build clean. All 8 design-doc phases (0-7) now shipped.
