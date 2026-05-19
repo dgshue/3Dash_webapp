@@ -91,6 +91,9 @@ export default function ConfigEditor() {
   const skipPreviewRebuildRef = useRef(false);
   const lightFormRef = useRef<LightFormHandle>(null);
   const tubeAnchorRef = useRef<Mesh | null>(null);
+  // Anchor (scanner) gizmo — separate from the light gizmo because it
+  // attaches directly to the cyan pin mesh (no preview-mesh dance).
+  const anchorGizmoRef = useRef<PositionGizmo | null>(null);
 
   const [haEntities, setHaEntities] = useState<HAEntityOption[]>(() => getEntityCache());
   const [lights, setLights] = useState<LightConfig[]>([]);
@@ -791,15 +794,69 @@ export default function ConfigEditor() {
 
   // Update anchor (scanner) pin position as the user drags sliders / picks
   // from the scene. Without this the pin only moved on save, so users
-  // thought their edits weren't sticking.
+  // thought their edits weren't sticking. Skips during gizmo drag — the
+  // gizmo is driving the mesh directly there.
   useEffect(() => {
     if (!anchorPanelOpen || anchorEditIdx === null) return;
+    if (draggingGizmoRef.current) return;
     const target = anchorsRef.current[anchorEditIdx];
     if (!target) return;
     const entry = anchorMeshMapRef.current[target.deviceId];
     if (!entry) return;
     setAnchorPosition(entry, position.x, position.y, position.z);
   }, [position, anchorPanelOpen, anchorEditIdx]);
+
+  // Attach an RGB position gizmo to the cyan anchor pin while the form is
+  // open. Drag handles update React state on each frame and on drag-end
+  // (snapshots an undo entry on drag-start).
+  useEffect(() => {
+    if (!anchorPanelOpen || anchorEditIdx === null) return;
+    const target = anchorsRef.current[anchorEditIdx];
+    if (!target) return;
+    const entry = anchorMeshMapRef.current[target.deviceId];
+    if (!entry) return;
+    const scene = sceneCtxRef.current?.scene;
+    if (!scene) return;
+    if (!utilLayerRef.current) {
+      utilLayerRef.current = new UtilityLayerRenderer(scene);
+    }
+    const gizmo = new PositionGizmo(utilLayerRef.current);
+    gizmo.scaleRatio = 1.2;
+    gizmo.attachedMesh = entry.pin;
+    const onDragStart = () => {
+      draggingGizmoRef.current = true;
+      posUndoStackRef.current.push({ ...positionRef.current });
+    };
+    const onDrag = () => {
+      const p = entry.pin.position;
+      const newPos: LightPosition = {
+        x: parseFloat(p.x.toFixed(3)),
+        y: parseFloat(p.y.toFixed(3)),
+        z: parseFloat(p.z.toFixed(3)),
+      };
+      positionRef.current = newPos;
+      setPosition(newPos);
+      if (entry.debugSphere) entry.debugSphere.position.copyFrom(entry.pin.position);
+    };
+    const onDragEnd = () => {
+      draggingGizmoRef.current = false;
+      document.dispatchEvent(new Event('tour:gizmo-used'));
+    };
+    for (const ax of [gizmo.xGizmo, gizmo.yGizmo, gizmo.zGizmo]) {
+      ax.dragBehavior.onDragStartObservable.add(onDragStart);
+      ax.dragBehavior.onDragObservable.add(onDrag);
+      ax.dragBehavior.onDragEndObservable.add(onDragEnd);
+    }
+    // Make gizmo arrows semi-transparent (match the light gizmo treatment).
+    for (const m of utilLayerRef.current.utilityLayerScene.meshes) {
+      if (m.material) (m.material as StandardMaterial).alpha = 0.5;
+    }
+    anchorGizmoRef.current = gizmo;
+    return () => {
+      gizmo.dispose();
+      anchorGizmoRef.current = null;
+    };
+  }, [anchorPanelOpen, anchorEditIdx]);
 
   // Wrap setPosition for slider changes: push undo entry on first change after idle
   const sliderIdleRef = useRef(true);

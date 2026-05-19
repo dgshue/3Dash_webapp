@@ -1412,6 +1412,20 @@ export default function Dashboard() {
         // appended (stacked at origin for the user to click-to-place). This
         // way users upgrading from Phase B (3 anchors stored) automatically
         // pick up newly-named scanners without nuking their saved positions.
+        // CRITICAL: re-read fresh config from localStorage every poll
+        // rather than trusting `configRef.current` which was snapshotted
+        // at mount. /editor edits in another tab (or in this same tab
+        // after a route change) get written to localStorage; if we use
+        // the stale ref, we'd merge against pre-edit data and overwrite
+        // the user's saved positions with the default stacked-near-origin
+        // ones. Re-reading is cheap (single localStorage.getItem +
+        // JSON.parse) and keeps positions stable across tabs.
+        {
+          const freshConfig = getConfig();
+          if (configRef.current && Array.isArray(freshConfig.anchors)) {
+            configRef.current = { ...(configRef.current as AppConfig), anchors: freshConfig.anchors };
+          }
+        }
         if (parsed.anchors.length > 0) {
           const existing = configRef.current?.anchors || [];
           const existingIds = new Set(existing.map((a) => a.deviceId.toLowerCase()));
