@@ -2043,19 +2043,22 @@ export default function ConfigEditor() {
 
   const handleSaveAnchor = useCallback(
     async (cfg: AnchorConfig) => {
+      // Phase 1: any save through the editor form is a deliberate placement,
+      // so mark placed=true regardless of where the user came from.
+      const placedCfg: AnchorConfig = { ...cfg, placed: true };
       let updated: AnchorConfig[];
       if (anchorEditIdx !== null) {
         const oldId = anchors[anchorEditIdx]?.deviceId;
-        if (oldId && oldId !== cfg.deviceId) {
+        if (oldId && oldId !== placedCfg.deviceId) {
           removeAnchorMesh(anchorMeshMapRef.current, oldId);
         }
-        updated = anchors.map((a, i) => (i === anchorEditIdx ? cfg : a));
+        updated = anchors.map((a, i) => (i === anchorEditIdx ? placedCfg : a));
       } else {
-        if (anchors.some((a) => a.deviceId === cfg.deviceId)) {
-          alert(`An anchor with device ID "${cfg.deviceId}" already exists.`);
+        if (anchors.some((a) => a.deviceId === placedCfg.deviceId)) {
+          alert(`An anchor with device ID "${placedCfg.deviceId}" already exists.`);
           return;
         }
-        updated = [...anchors, cfg];
+        updated = [...anchors, placedCfg];
       }
       setAnchors(updated);
       setAnchorPanelOpen(false);
@@ -2063,8 +2066,8 @@ export default function ConfigEditor() {
 
       const scene = sceneCtxRef.current?.scene;
       if (scene) {
-        removeAnchorMesh(anchorMeshMapRef.current, cfg.deviceId);
-        anchorMeshMapRef.current[cfg.deviceId] = createAnchorMesh(scene, cfg);
+        removeAnchorMesh(anchorMeshMapRef.current, placedCfg.deviceId);
+        anchorMeshMapRef.current[placedCfg.deviceId] = createAnchorMesh(scene, placedCfg);
       }
 
       try {

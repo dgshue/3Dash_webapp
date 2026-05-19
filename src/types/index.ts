@@ -105,6 +105,13 @@ export interface AnchorConfig {
    *  When a phone's floor is known, the weighted centroid filters anchors
    *  by this field. Unknown floor → all anchors used. */
   floor: string;
+  /** Phase 1: true once the user has explicitly placed the anchor in the
+   *  scene. Auto-discovered anchors default to false (stacked at origin
+   *  until placed). Manual /editor adds set this true on save. */
+  placed?: boolean;
+  /** Phase 1: user-hidden anchor. Excluded from solver inputs but still
+   *  shown (greyed) in the AnchorPanel. */
+  hidden?: boolean;
 }
 
 // --- Shadow Walls (invisible roof / sun blockers) ---

@@ -251,11 +251,19 @@ function knnMatch(currentRssi: Record<string, number>, fingerprints: Calibration
 
 ## Implementation phases (next session)
 
-### Phase 0 — Anchor discovery fix (10 min)
-- Single-line filter change: `_is_scanner === true` instead of name regex
-- Test: Anchors tab now shows all 7 scanners
-- Also: surface anchors that already have area_id set in HA (auto-populate
-  initial floor from area)
+### Phase 0 — Anchor discovery fix ✅ SHIPPED (2026-05-18)
+- Already shipped via commit `3b8473a` ("fix(phase-c): merge ALL Bermuda
+  scanners as anchors, not just unconfigured"). Beat this design doc by ~24h.
+- `parseBermudaDump` in `src/services/bermudaApi.ts` filters by
+  `dev._is_scanner === true` (line 164).
+- `Dashboard.tsx` auto-discovery (lines 1386-1422) merges any missing
+  scanner into `config.anchors`, stacking new ones near origin so the user
+  can click-to-place each.
+- Floor auto-populated from `dev.floor_name` (Bermuda mirrors HA's area→floor).
+- Carryover for Phase 1: stored configs from the Phase B era (3-anchor regex
+  filter) get the other 4 backfilled on next Bermuda poll. So the UX gap
+  reported by the user ("only 3 anchors visible") is the AnchorList UI
+  rendering against stale storage — Phase 1 surfaces it correctly.
 
 ### Phase 1 — AnchorPanel dashboard widget (1 day)
 - New floating panel in dashboard view (not just /editor)

@@ -47,8 +47,10 @@ import {
 import {
   createAnchorMesh,
   disposeAllAnchors,
+  setAnchorPosition,
   type AnchorMeshMap,
 } from '../../babylon/AnchorMeshFactory';
+import { enterPickMode } from '../../babylon/PickMode';
 import {
   solveTrilateration,
   type TrilaterationAnchor,
@@ -60,6 +62,7 @@ import {
   findTrackerEntityForBermuda,
 } from '../../services/bermudaApi';
 import HUD from '../../components/HUD';
+import AnchorPanel from '../../components/AnchorPanel';
 import LightModal from '../../components/LightModal';
 import RemoteModal from '../../components/RemoteModal';
 import DisplayModal from '../../components/DisplayModal';
@@ -102,6 +105,11 @@ export default function Dashboard() {
   const trackerLastSolveRef = useRef<Record<string, number>>({});
   /** Phase B: dump_devices polling timer. */
   const bermudaPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Phase 1: Bermuda scanner addresses (lowercased) seen in the last poll.
+   *  Drives the AnchorPanel "live" indicator. */
+  const liveAnchorIdsRef = useRef<Set<string>>(new Set());
+  /** Phase 1: lifecycle handle for the active anchor click-to-place pick mode. */
+  const anchorPickCancelRef = useRef<(() => void) | null>(null);
   const haRef = useRef<HALike | null>(null);
   const configRef = useRef<AppConfig | null>(null);
   const lastStatesRef = useRef<Record<string, HAState>>({});
@@ -158,6 +166,14 @@ export default function Dashboard() {
     updateSettings('misc', { panelRatio: ratio });
   }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** Phase 1: AnchorPanel visibility + currently-placing anchor. */
+  const [anchorPanelOpen, setAnchorPanelOpen] = useState(false);
+  const [placingAnchorId, setPlacingAnchorId] = useState<string | null>(null);
+  /** Phase 1: anchors mirrored from configRef.current so the panel re-renders
+   *  when auto-discovery adds new ones or the user places/hides. */
+  const [dashboardAnchors, setDashboardAnchors] = useState<AnchorConfig[]>([]);
+  /** Phase 1: lowercased scanner addresses seen in the last Bermuda poll. */
+  const [liveAnchorIds, setLiveAnchorIds] = useState<Set<string>>(new Set());
   const [cardStates, setCardStates] = useState<Record<string, HAState>>({});
   const [gridEditMode, setGridEditMode] = useState(false);
   const [cardPanelOpen, setCardPanelOpen] = useState(false);
@@ -428,6 +444,59 @@ export default function Dashboard() {
       }
     }, 400);
   }, [sunLiveMode, sliderValue]);
+
+  // Phase 1: Anchor click-to-place handlers ---------------------------------
+
+  const persistAnchors = useCallback((next: AnchorConfig[]) => {
+    if (configRef.current) {
+      configRef.current = { ...(configRef.current as AppConfig), anchors: next };
+    }
+    setDashboardAnchors(next);
+    try { updateConfig({ anchors: next }); } catch (err) {
+      console.warn('[3Dash][anchor] failed to persist anchors:', err);
+    }
+  }, []);
+
+  const handleAnchorPlace = useCallback((deviceId: string) => {
+    const scene = sceneCtxRef.current?.scene;
+    if (!scene) return;
+    // Cancel any previous placement first.
+    anchorPickCancelRef.current?.();
+    anchorPickCancelRef.current = null;
+    setPlacingAnchorId(deviceId);
+    anchorPickCancelRef.current = enterPickMode(scene, (point) => {
+      anchorPickCancelRef.current = null;
+      setPlacingAnchorId(null);
+      const current = configRef.current?.anchors || [];
+      const idx = current.findIndex((a) => a.deviceId === deviceId);
+      if (idx < 0) return;
+      const next = current.slice();
+      next[idx] = {
+        ...current[idx],
+        position: { x: point.x, y: point.y, z: point.z },
+        placed: true,
+      };
+      // Update the mesh in place so the cyan pin jumps to the picked spot.
+      const entry = anchorMapRef.current[deviceId];
+      if (entry) setAnchorPosition(entry, point.x, point.y, point.z);
+      persistAnchors(next);
+    });
+  }, [persistAnchors]);
+
+  const handleAnchorCancelPlace = useCallback(() => {
+    anchorPickCancelRef.current?.();
+    anchorPickCancelRef.current = null;
+    setPlacingAnchorId(null);
+  }, []);
+
+  const handleAnchorToggleHidden = useCallback((deviceId: string) => {
+    const current = configRef.current?.anchors || [];
+    const idx = current.findIndex((a) => a.deviceId === deviceId);
+    if (idx < 0) return;
+    const next = current.slice();
+    next[idx] = { ...current[idx], hidden: !current[idx].hidden };
+    persistAnchors(next);
+  }, [persistAnchors]);
 
   const handleEdgeModeChange = useCallback((mode: 'classic' | 'enhanced') => {
     setEdgeMode(mode);
@@ -712,12 +781,14 @@ export default function Dashboard() {
       if (simulationMode) {
         configRef.current = SIMULATION_CONFIG;
         setSidePanelConfig(SIMULATION_CONFIG.sidePanel);
+        setDashboardAnchors(SIMULATION_CONFIG.anchors || []);
       } else {
         try {
           const config = await getConfig();
           if (disposed) return;
           configRef.current = config;
           setSidePanelConfig(config.sidePanel);
+          setDashboardAnchors(config.anchors || []);
           if (config.location.northOffset !== undefined) setNorthOffset(config.location.northOffset);
         } catch (e) {
           console.warn('[Config] Failed to load:', e);
@@ -1082,6 +1153,10 @@ export default function Dashboard() {
       trackerFloorRef.current = {};
       trackerLastUpdateRef.current = {};
       if (bermudaPollTimerRef.current) { clearInterval(bermudaPollTimerRef.current); bermudaPollTimerRef.current = null; }
+      // Phase 1: cancel any in-flight anchor pick mode so unmount doesn't
+      // leave a dangling onPointerDown handler on the disposed scene.
+      anchorPickCancelRef.current?.();
+      anchorPickCancelRef.current = null;
       if (weatherIntervalRef) clearInterval(weatherIntervalRef);
       weatherRef.current?.dispose();
       weatherRef.current = null;
@@ -1383,6 +1458,20 @@ export default function Dashboard() {
         // appended (stacked at origin for the user to click-to-place). This
         // way users upgrading from Phase B (3 anchors stored) automatically
         // pick up newly-named scanners without nuking their saved positions.
+        // Phase 1: update the live-set for the AnchorPanel indicator.
+        // Only re-set state when membership actually changes (poll runs every
+        // 3s; React re-renders only when anchors come/go).
+        {
+          const nextLive = new Set(parsed.anchors.map((a) => a.address.toLowerCase()));
+          const prev = liveAnchorIdsRef.current;
+          const changed = nextLive.size !== prev.size
+            || Array.from(nextLive).some((id) => !prev.has(id));
+          if (changed) {
+            liveAnchorIdsRef.current = nextLive;
+            setLiveAnchorIds(nextLive);
+          }
+        }
+
         if (parsed.anchors.length > 0) {
           const existing = configRef.current?.anchors || [];
           const existingIds = new Set(existing.map((a) => a.deviceId.toLowerCase()));
@@ -1401,6 +1490,7 @@ export default function Dashboard() {
                   z: Math.floor(idx / 3) * 0.4,
                 },
                 floor: a.floor || 'Main',
+                placed: false,
               };
             });
             const merged = [...existing, ...additions];
@@ -1409,6 +1499,7 @@ export default function Dashboard() {
               + `(total ${merged.length}) from bermuda.dump_devices`,
             );
             configRef.current = { ...(configRef.current as AppConfig), anchors: merged };
+            setDashboardAnchors(merged);
             try { updateConfig({ anchors: merged }); } catch { /* best-effort */ }
             const scene2 = sceneCtxRef.current?.scene;
             if (scene2) {
@@ -1422,7 +1513,13 @@ export default function Dashboard() {
         }
 
         const trackers = configRef.current?.trackers || [];
-        const anchors = configRef.current?.anchors || [];
+        // Phase 1: filter out user-hidden anchors AND anchors that haven't been
+        // placed yet (placed === false) — those still sit at the auto-discovery
+        // stack near origin and would corrupt the solver. Anchors with
+        // `placed === undefined` are pre-Phase-1 user-placed anchors; include
+        // them.
+        const allAnchors = configRef.current?.anchors || [];
+        const anchors = allAnchors.filter((a) => !a.hidden && a.placed !== false);
         if (!trackers.length || !anchors.length) return;
 
         const trackerHandles = trackers.map((t) => ({ entityId: t.entityId, label: t.label }));
@@ -2058,6 +2155,41 @@ export default function Dashboard() {
           }}
           currentWeather={currentWeather}
         />
+
+        {/* Phase 1: AnchorPanel toggle + panel + placement banner. */}
+        <button
+          className={`anchor-panel-toggle${anchorPanelOpen ? ' active' : ''}`}
+          onClick={() => setAnchorPanelOpen((v) => !v)}
+          title={`Anchors (${dashboardAnchors.filter((a) => a.placed !== false).length}/${dashboardAnchors.length} placed)`}
+          aria-label="Toggle anchor panel"
+        >
+          {'\u{1F4CD}'}
+          {dashboardAnchors.some((a) => a.placed === false) && (
+            <span className="anchor-panel-toggle-badge">
+              {dashboardAnchors.filter((a) => a.placed === false).length}
+            </span>
+          )}
+        </button>
+        <AnchorPanel
+          open={anchorPanelOpen}
+          onClose={() => setAnchorPanelOpen(false)}
+          anchors={dashboardAnchors}
+          liveDeviceIds={liveAnchorIds}
+          placingDeviceId={placingAnchorId}
+          onPlace={handleAnchorPlace}
+          onCancelPlace={handleAnchorCancelPlace}
+          onToggleHidden={handleAnchorToggleHidden}
+        />
+        {placingAnchorId && (
+          <div className="anchor-place-banner">
+            Click on the model to place
+            {' '}
+            <strong>
+              {dashboardAnchors.find((a) => a.deviceId === placingAnchorId)?.label
+                || placingAnchorId}
+            </strong>
+          </div>
+        )}
 
         <LightModal
           visible={modalVisible}
