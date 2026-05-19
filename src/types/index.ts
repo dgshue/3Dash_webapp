@@ -112,7 +112,29 @@ export interface AnchorConfig {
   /** Phase 1: user-hidden anchor. Excluded from solver inputs but still
    *  shown (greyed) in the AnchorPanel. */
   hidden?: boolean;
+  /** Phase 2: BLE reference power (RSSI in dBm at 1m). Stored for Phase 4
+   *  path-loss distance model. Default: -55 dBm. */
+  refPower?: number;
+  /** Phase 2: path-loss exponent (n in RSSI = refPower − 10·n·log10(d)).
+   *  Typical 2.0 (free space) to 4.0 (dense walls). Default: 3.0. */
+  pathLossExp?: number;
+  /** Phase 2: antenna gain offset in dBi. Reserved; not yet consumed by any
+   *  solver. Default: 0. */
+  antennaGainDbi?: number;
+  /** Phase 2: solver weight multiplier in [0, 1]. Lets the user downweight
+   *  unreliable anchors without hiding them outright. Default: 1.0. */
+  trustWeight?: number;
 }
+
+/** Phase 2 calibration defaults — applied wherever an anchor's value is
+ *  undefined. Centralized so Phase 4 path-loss math, the AnchorForm
+ *  placeholders, and the solver all stay in sync. */
+export const ANCHOR_CALIBRATION_DEFAULTS = {
+  refPower: -55,
+  pathLossExp: 3.0,
+  antennaGainDbi: 0,
+  trustWeight: 1.0,
+} as const;
 
 // --- Shadow Walls (invisible roof / sun blockers) ---
 

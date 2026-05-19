@@ -1561,6 +1561,7 @@ export default function Dashboard() {
           const sameFloorWithDist = sameFloorList.filter((a) => typeof distances[a.deviceId] === 'number');
 
           // Weighted centroid warm-start (Phase B fallback if solver under-determined).
+          // Phase 2: per-anchor trustWeight multiplies the inverse-distance weight.
           let centroid: { x: number; y: number; z: number } | null = null;
           {
             const allWithDist = anchors.filter((a) => typeof distances[a.deviceId] === 'number');
@@ -1568,7 +1569,8 @@ export default function Dashboard() {
               let totalW = 0, sx = 0, sy = 0, sz = 0;
               for (const a of allWithDist) {
                 const d = distances[a.deviceId];
-                const w = 1 / Math.max(d, 0.5);
+                const trust = a.trustWeight ?? 1.0;
+                const w = (1 / Math.max(d, 0.5)) * trust;
                 totalW += w;
                 sx += a.position.x * w;
                 sy += a.position.y * w;
@@ -1598,15 +1600,18 @@ export default function Dashboard() {
 
           if (sameFloorWithDist.length >= 3) {
             // Build solver anchor list — include cross-floor too with weight 0.1
-            // so we have data when floor sensor is uncertain.
+            // so we have data when floor sensor is uncertain. Phase 2: also
+            // multiply by per-anchor trustWeight (default 1.0).
             const sameFloorIds = new Set(sameFloorWithDist.map((a) => a.deviceId));
             const solverAnchors: TrilaterationAnchor[] = [];
             for (const a of anchors) {
               if (typeof distances[a.deviceId] !== 'number') continue;
+              const baseW = sameFloorIds.has(a.deviceId) ? 1.0 : 0.1;
+              const trust = a.trustWeight ?? 1.0;
               solverAnchors.push({
                 position: a.position,
                 distance: distances[a.deviceId],
-                weight: sameFloorIds.has(a.deviceId) ? 1.0 : 0.1,
+                weight: baseW * trust,
               });
             }
             // Warm start = existing Kalman position if any, else centroid, else mesh pos.

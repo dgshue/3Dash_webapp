@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { AnchorConfig, LightPosition } from '../types';
+import { ANCHOR_CALIBRATION_DEFAULTS } from '../types';
 import { FormPanel, AccordionSection } from './FormPanel';
 
 interface Props {
@@ -31,6 +32,11 @@ export default function AnchorForm({
   const [label, setLabel] = useState('');
   const [floor, setFloor] = useState('Main');
   const [floorOther, setFloorOther] = useState('');
+  // Phase 2: calibration values (blank string === "use default" placeholder).
+  const [refPower, setRefPower] = useState<string>('');
+  const [pathLossExp, setPathLossExp] = useState<string>('');
+  const [antennaGainDbi, setAntennaGainDbi] = useState<string>('');
+  const [trustWeight, setTrustWeight] = useState<string>('');
 
   useEffect(() => {
     if (!open) return;
@@ -44,11 +50,19 @@ export default function AnchorForm({
         setFloor('__other__');
         setFloorOther(editAnchor.floor);
       }
+      setRefPower(editAnchor.refPower !== undefined ? String(editAnchor.refPower) : '');
+      setPathLossExp(editAnchor.pathLossExp !== undefined ? String(editAnchor.pathLossExp) : '');
+      setAntennaGainDbi(editAnchor.antennaGainDbi !== undefined ? String(editAnchor.antennaGainDbi) : '');
+      setTrustWeight(editAnchor.trustWeight !== undefined ? String(editAnchor.trustWeight) : '');
     } else {
       setDeviceId('');
       setLabel('');
       setFloor('Main');
       setFloorOther('');
+      setRefPower('');
+      setPathLossExp('');
+      setAntennaGainDbi('');
+      setTrustWeight('');
     }
   }, [editAnchor, open]);
 
@@ -64,6 +78,13 @@ export default function AnchorForm({
     else onEnterPickMode();
   }, [placingMode, onEnterPickMode, onExitPickMode]);
 
+  const parseOptionalFloat = (raw: string): number | undefined => {
+    const t = raw.trim();
+    if (t === '') return undefined;
+    const v = parseFloat(t);
+    return isFinite(v) ? v : undefined;
+  };
+
   const handleSave = useCallback(() => {
     const id = deviceId.trim();
     if (!id) {
@@ -77,8 +98,16 @@ export default function AnchorForm({
       position: { x: position.x, y: position.y, z: position.z },
       floor: resolvedFloor,
     };
+    const rp = parseOptionalFloat(refPower);
+    const pl = parseOptionalFloat(pathLossExp);
+    const ag = parseOptionalFloat(antennaGainDbi);
+    const tw = parseOptionalFloat(trustWeight);
+    if (rp !== undefined) cfg.refPower = rp;
+    if (pl !== undefined) cfg.pathLossExp = pl;
+    if (ag !== undefined) cfg.antennaGainDbi = ag;
+    if (tw !== undefined) cfg.trustWeight = Math.max(0, Math.min(1, tw));
     onSave(cfg);
-  }, [deviceId, label, floor, floorOther, position, onSave]);
+  }, [deviceId, label, floor, floorOther, position, refPower, pathLossExp, antennaGainDbi, trustWeight, onSave]);
 
   const footer = (
     <>
@@ -178,6 +207,67 @@ export default function AnchorForm({
             />
           </div>
         ))}
+      </AccordionSection>
+
+      <AccordionSection title="Calibration (advanced)">
+        <div className="field-group">
+          <label className="field-label">Reference power (dBm @ 1m)</label>
+          <input
+            type="number"
+            className="field-input"
+            placeholder={String(ANCHOR_CALIBRATION_DEFAULTS.refPower)}
+            value={refPower}
+            step={1}
+            onChange={(e) => setRefPower(e.target.value)}
+          />
+          <span className="field-label" style={{ opacity: 0.5, fontSize: 11, marginTop: 2 }}>
+            Default {ANCHOR_CALIBRATION_DEFAULTS.refPower}. Used by Phase 4 path-loss model.
+          </span>
+        </div>
+        <div className="field-group">
+          <label className="field-label">Path-loss exponent (n)</label>
+          <input
+            type="number"
+            className="field-input"
+            placeholder={String(ANCHOR_CALIBRATION_DEFAULTS.pathLossExp)}
+            value={pathLossExp}
+            step={0.1}
+            onChange={(e) => setPathLossExp(e.target.value)}
+          />
+          <span className="field-label" style={{ opacity: 0.5, fontSize: 11, marginTop: 2 }}>
+            Default {ANCHOR_CALIBRATION_DEFAULTS.pathLossExp}. Open space 2.0, dense walls 4.0.
+          </span>
+        </div>
+        <div className="field-group">
+          <label className="field-label">Antenna gain offset (dBi)</label>
+          <input
+            type="number"
+            className="field-input"
+            placeholder={String(ANCHOR_CALIBRATION_DEFAULTS.antennaGainDbi)}
+            value={antennaGainDbi}
+            step={0.5}
+            onChange={(e) => setAntennaGainDbi(e.target.value)}
+          />
+          <span className="field-label" style={{ opacity: 0.5, fontSize: 11, marginTop: 2 }}>
+            Default {ANCHOR_CALIBRATION_DEFAULTS.antennaGainDbi}. Reserved for future use.
+          </span>
+        </div>
+        <div className="field-group">
+          <label className="field-label">Trust weight (0.0 – 1.0)</label>
+          <input
+            type="number"
+            className="field-input"
+            placeholder={String(ANCHOR_CALIBRATION_DEFAULTS.trustWeight)}
+            value={trustWeight}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(e) => setTrustWeight(e.target.value)}
+          />
+          <span className="field-label" style={{ opacity: 0.5, fontSize: 11, marginTop: 2 }}>
+            Default {ANCHOR_CALIBRATION_DEFAULTS.trustWeight}. Multiplies the solver weight for this anchor.
+          </span>
+        </div>
       </AccordionSection>
     </FormPanel>
   );
