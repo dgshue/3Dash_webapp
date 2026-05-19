@@ -47,6 +47,7 @@ import TubeForm, { type TubePreviewInfo } from '../../components/TubeForm';
 import { createTubeMeshes, removeTubeMeshes, disposeAllTubes, renderMockupLabels, type TubeMap } from '../../babylon/TubeMeshFactory';
 import TrackerList from '../../components/TrackerList';
 import TrackerForm from '../../components/TrackerForm';
+import TrackerDiscoveryModal from '../../components/TrackerDiscoveryModal';
 import AnchorList from '../../components/AnchorList';
 import AnchorForm from '../../components/AnchorForm';
 import BermudaDiscoveryModal from '../../components/BermudaDiscoveryModal';
@@ -197,6 +198,9 @@ export default function ConfigEditor() {
    *  the user can add any of them as an anchor, not just devices named
    *  "anchor". */
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
+  /** Tracker discovery modal — surfaces every device_tracker.* in HA so
+   *  the user can pick Private BLE Devices / Bermuda trackers to track. */
+  const [trackerDiscoveryOpen, setTrackerDiscoveryOpen] = useState(false);
 
   // Current preview shape/size from LightForm
   const previewInfoRef = useRef<PreviewInfo>({ shape: 'sphere', size: { diameter: 0.25 } });
@@ -1881,6 +1885,34 @@ export default function ConfigEditor() {
     setTrackerPanelOpen(true);
   }, []);
 
+  /** Persist trackers discovered via the HA Tracker Discovery modal.
+   *  BLE solver drives positions, so no per-tracker placement step. */
+  const handleTrackerDiscoveryAdd = useCallback(
+    async (additions: TrackerConfig[]) => {
+      if (additions.length === 0) return;
+      const updated = [...trackersRef.current, ...additions];
+      setTrackers(updated);
+      const scene = sceneCtxRef.current?.scene;
+      if (scene) {
+        for (const a of additions) {
+          if (!trackerMeshMapRef.current[a.entityId]) {
+            trackerMeshMapRef.current[a.entityId] = createTrackerMesh(scene, a);
+          }
+        }
+      }
+      try {
+        await updateConfig({ trackers: updated });
+        showToast(
+          `Added ${additions.length} tracker${additions.length === 1 ? '' : 's'} from HA`,
+        );
+      } catch (err) {
+        console.error('[Config] Auto-save failed:', err);
+        showToast('Added locally (server sync failed)');
+      }
+    },
+    [],
+  );
+
   const handleEditTracker = useCallback(
     (idx: number) => {
       const cfg = trackers[idx];
@@ -2371,7 +2403,11 @@ export default function ConfigEditor() {
               + Add Tube
             </button>
           ) : editorMode === 'trackers' ? (
-            <button className="btn btn-primary editor-add-btn" onClick={handleAddTracker}>
+            <button
+              className="btn btn-primary editor-add-btn"
+              onClick={() => setTrackerDiscoveryOpen(true)}
+              title="Pick from the device_trackers HA already knows about (including Private BLE Device)"
+            >
               + Add Tracker
             </button>
           ) : (
@@ -2468,15 +2504,16 @@ export default function ConfigEditor() {
         <TrackerForm
           open={trackerPanelOpen}
           editTracker={trackerEditIdx !== null ? trackers[trackerEditIdx] : null}
-          position={position}
-          onPositionChange={handlePositionChange}
           onSave={handleSaveTracker}
           onClose={handleCloseTrackerPanel}
-          onEnterPickMode={handleEnterTrackerPickMode}
-          onExitPickMode={handleExitTrackerPickMode}
-          pickingRowIdx={trackerPickRowIdx}
-          placingMode={placingMode}
           haEntities={haEntities}
+        />
+
+        <TrackerDiscoveryModal
+          open={trackerDiscoveryOpen}
+          existingTrackers={trackers}
+          onAdd={handleTrackerDiscoveryAdd}
+          onClose={() => setTrackerDiscoveryOpen(false)}
         />
 
         <AnchorForm

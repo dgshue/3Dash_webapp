@@ -1,42 +1,22 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import type { TrackerConfig, LightPosition } from '../types';
+import { useState, useEffect, useCallback } from 'react';
+import type { TrackerConfig } from '../types';
 import { FormPanel, AccordionSection } from './FormPanel';
 import EntityPicker, { type HAEntityOption } from './EntityPicker';
-import { normalizeAreaKey } from '../babylon/TrackerMeshFactory';
 
 /**
- * Row in the per-room position editor. We track `pendingAreaId` separately
- * from `areaId` (the normalized key actually stored in cfg.areaPositions)
- * so the user can type freely without keys being eaten on every keystroke.
+ * Tracker editor — identity + appearance only. Positions are driven by the
+ * live BLE solver (Bermuda distances → k-NN / trilateration / centroid /
+ * area-snap) in Dashboard.tsx, so the user never has to place an orb by
+ * hand. The form preserves any `position` / `areaPositions` on `editTracker`
+ * but doesn't expose them — those legacy fields stay in the saved config so
+ * a future fallback path can read them.
  */
-interface AreaRow {
-  areaId: string; // raw user input — normalized on save
-  pos: LightPosition;
-}
 
 interface Props {
   open: boolean;
   editTracker: TrackerConfig | null;
-  /** Picked-from-scene position for the "default" position OR for the row
-   *  identified by `pickingRowIdx`. When pickingRowIdx is null, this maps
-   *  to the tracker's default position. */
-  position: LightPosition;
-  onPositionChange: (pos: LightPosition) => void;
   onSave: (cfg: TrackerConfig) => void;
   onClose: () => void;
-  /** Begin pick-from-scene mode. `rowIdx` = null → default position;
-   *  otherwise → that areaPositions row gets the picked point. */
-  onEnterPickMode: (rowIdx: number | null) => void;
-  onExitPickMode: () => void;
-  /**
-   *  Which target is currently being picked:
-   *    -1   → idle (not in pick mode)
-   *    null → the tracker's default position (writes via onPositionChange)
-   *    >= 0 → the areaPositions row at that index
-   */
-  pickingRowIdx: number | null;
-  /** True while waiting for a click on the scene. */
-  placingMode: boolean;
   haEntities?: HAEntityOption[];
 }
 
@@ -47,14 +27,8 @@ const DEFAULT_GLOW = 1;
 export default function TrackerForm({
   open,
   editTracker,
-  position,
-  onPositionChange,
   onSave,
   onClose,
-  onEnterPickMode,
-  onExitPickMode,
-  pickingRowIdx,
-  placingMode,
   haEntities = [],
 }: Props) {
   const [entityId, setEntityId] = useState('');
@@ -64,9 +38,7 @@ export default function TrackerForm({
   const [diameter, setDiameter] = useState(DEFAULT_DIAMETER);
   const [glow, setGlow] = useState(DEFAULT_GLOW);
   const [hideWhenAway, setHideWhenAway] = useState(true);
-  const [areaRows, setAreaRows] = useState<AreaRow[]>([]);
 
-  // Reset / populate form when the panel opens
   useEffect(() => {
     if (!open) return;
     if (editTracker) {
@@ -77,12 +49,6 @@ export default function TrackerForm({
       setDiameter(editTracker.diameter ?? DEFAULT_DIAMETER);
       setGlow(editTracker.glow ?? DEFAULT_GLOW);
       setHideWhenAway(editTracker.hideWhenAway ?? true);
-      setAreaRows(
-        Object.entries(editTracker.areaPositions || {}).map(([k, v]) => ({
-          areaId: k,
-          pos: { x: v.x, y: v.y, z: v.z },
-        })),
-      );
     } else {
       setEntityId('');
       setAreaEntityId('');
@@ -91,73 +57,8 @@ export default function TrackerForm({
       setDiameter(DEFAULT_DIAMETER);
       setGlow(DEFAULT_GLOW);
       setHideWhenAway(true);
-      setAreaRows([]);
     }
   }, [editTracker, open]);
-
-  // Track previous placingMode so we can detect the "click happened" transition
-  // (placingMode goes true → false). When that happens, if we were targeting a
-  // row (pickingRowIdx >= 0), copy the freshly-picked position into that row.
-  // Default-position picks (pickingRowIdx === null) flow directly via
-  // onPositionChange and don't need a fan-out here.
-  const prevPlacingRef = useRef(placingMode);
-  useEffect(() => {
-    const prev = prevPlacingRef.current;
-    prevPlacingRef.current = placingMode;
-    if (!prev || placingMode) return; // only act on true → false edge
-    if (pickingRowIdx === null || pickingRowIdx < 0) return;
-    const rowIdx = pickingRowIdx;
-    setAreaRows((prevRows) =>
-      prevRows.map((r, i) => (i === rowIdx ? { ...r, pos: { ...position } } : r)),
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [placingMode]);
-
-  const handlePosChange = useCallback(
-    (axis: 'x' | 'y' | 'z', value: number) => {
-      onPositionChange({ ...position, [axis]: parseFloat(value.toFixed(3)) });
-    },
-    [position, onPositionChange],
-  );
-
-  const updateRow = useCallback(
-    (idx: number, update: Partial<AreaRow> | { pos: Partial<LightPosition> }) => {
-      setAreaRows((prev) =>
-        prev.map((r, i) => {
-          if (i !== idx) return r;
-          if ('pos' in update && typeof update.pos === 'object') {
-            return { ...r, pos: { ...r.pos, ...(update.pos as Partial<LightPosition>) } };
-          }
-          return { ...r, ...(update as Partial<AreaRow>) };
-        }),
-      );
-    },
-    [],
-  );
-
-  const addRow = useCallback(() => {
-    setAreaRows((prev) => [
-      ...prev,
-      { areaId: '', pos: { x: position.x, y: position.y, z: position.z } },
-    ]);
-  }, [position]);
-
-  const removeRow = useCallback((idx: number) => {
-    setAreaRows((prev) => prev.filter((_, i) => i !== idx));
-  }, []);
-
-  const handlePickDefault = useCallback(() => {
-    if (placingMode) onExitPickMode();
-    else onEnterPickMode(null);
-  }, [placingMode, onEnterPickMode, onExitPickMode]);
-
-  const handlePickRow = useCallback(
-    (idx: number) => {
-      if (placingMode) onExitPickMode();
-      else onEnterPickMode(idx);
-    },
-    [placingMode, onEnterPickMode, onExitPickMode],
-  );
 
   const handleSave = useCallback(() => {
     const id = entityId.trim();
@@ -165,17 +66,10 @@ export default function TrackerForm({
       alert('Entity ID is required');
       return;
     }
-    // Build areaPositions: normalize keys, drop empty keys, last-write-wins
-    // when two rows normalize to the same key (warn in console).
-    const areaPositions: Record<string, LightPosition> = {};
-    for (const row of areaRows) {
-      const key = normalizeAreaKey(row.areaId);
-      if (!key) continue;
-      if (areaPositions[key]) {
-        console.warn(`[TrackerForm] duplicate area key "${key}" — last value wins`);
-      }
-      areaPositions[key] = { x: row.pos.x, y: row.pos.y, z: row.pos.z };
-    }
+    // Preserve any legacy position / areaPositions stored on the editTracker
+    // — we just don't surface them in the UI. Brand-new trackers get sane
+    // defaults; the BLE solver will move the orb to a real position once
+    // Bermuda has distance data.
     const cfg: TrackerConfig = {
       entityId: id,
       areaEntityId: areaEntityId.trim() || undefined,
@@ -183,23 +77,15 @@ export default function TrackerForm({
       color,
       diameter,
       glow,
-      position: { x: position.x, y: position.y, z: position.z },
-      areaPositions,
+      position: editTracker?.position || { x: 0, y: 1, z: 0 },
+      areaPositions: editTracker?.areaPositions || {},
       hideWhenAway,
     };
     onSave(cfg);
-  }, [entityId, areaEntityId, label, color, diameter, glow, position, areaRows, hideWhenAway, onSave]);
+  }, [entityId, areaEntityId, label, color, diameter, glow, hideWhenAway, editTracker, onSave]);
 
   const footer = (
     <>
-      <button
-        className="btn btn-primary"
-        onClick={handlePickDefault}
-      >
-        {placingMode && pickingRowIdx === null
-          ? '✕ Cancel Placement'
-          : '\u{1F4CD} Pick Default From Scene'}
-      </button>
       <button className="btn btn-success" onClick={handleSave}>
         &#10003; Save Tracker
       </button>
@@ -238,7 +124,7 @@ export default function TrackerForm({
             className="field-input"
           />
           <span className="field-label" style={{ opacity: 0.5, fontSize: 11, marginTop: 2 }}>
-            HA sensor that reports the current area as a string
+            HA sensor that reports the current area as a string. Optional — Bermuda fills this in automatically.
           </span>
         </div>
         <div className="field-group">
@@ -300,128 +186,20 @@ export default function TrackerForm({
         </div>
       </AccordionSection>
 
-      <AccordionSection title="Per-Room Positions" defaultOpen>
-        <div className="field-group">
-          <span className="field-label" style={{ opacity: 0.6, fontSize: 11 }}>
-            Area key is normalized on save (e.g. "Dining Room" → "dining_room").
-            Y coordinate is not clamped — pick on the upstairs floor for upstairs y.
-          </span>
-        </div>
-        {areaRows.map((row, idx) => (
-          <div
-            key={idx}
-            style={{
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: 8,
-              marginBottom: 8,
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-              <span className="field-label" style={{ fontWeight: 'bold' }}>
-                Room {idx + 1}
-              </span>
-              <button
-                className="btn btn-ghost"
-                style={{ padding: '2px 6px', fontSize: 11 }}
-                onClick={() => removeRow(idx)}
-                title="Delete row"
-              >
-                &#10005;
-              </button>
-            </div>
-            <div className="field-group">
-              <label className="field-label">Area ID / Name</label>
-              <input
-                type="text"
-                className="field-input"
-                placeholder="dining_room or Dining Room"
-                value={row.areaId}
-                onChange={(e) => updateRow(idx, { areaId: e.target.value })}
-              />
-              {row.areaId && normalizeAreaKey(row.areaId) !== row.areaId && (
-                <span className="field-label" style={{ opacity: 0.5, fontSize: 11, marginTop: 2 }}>
-                  Stored as: <code>{normalizeAreaKey(row.areaId)}</code>
-                </span>
-              )}
-            </div>
-            <span className="field-label" style={{ marginTop: 4 }}>Position</span>
-            {([
-              { label: 'X', color: '#f87171', key: 'x' as const, range: [-30, 30] as [number, number] },
-              { label: 'Z', color: '#4ade80', key: 'y' as const, range: [-2, 10] as [number, number] },
-              { label: 'Y', color: '#38bdf8', key: 'z' as const, range: [-30, 30] as [number, number] },
-            ]).map(({ label: axLabel, color: axColor, key, range }) => (
-              <div key={`row-${idx}-${key}`} className="pos-grid">
-                <span className="pos-axis" style={{ color: axColor }}>{axLabel}</span>
-                <input
-                  type="range"
-                  className="pos-slider"
-                  min={range[0]}
-                  max={range[1]}
-                  step={0.05}
-                  value={row.pos[key]}
-                  onChange={(e) => updateRow(idx, { pos: { [key]: parseFloat(e.target.value) } })}
-                />
-                <input
-                  type="number"
-                  className="pos-num"
-                  step={0.05}
-                  value={row.pos[key]}
-                  onChange={(e) => updateRow(idx, { pos: { [key]: parseFloat(e.target.value) || 0 } })}
-                />
-              </div>
-            ))}
-            <button
-              className="btn btn-ghost"
-              style={{ width: '100%', marginTop: 4, fontSize: 11 }}
-              onClick={() => handlePickRow(idx)}
-            >
-              {placingMode && pickingRowIdx === idx
-                ? '✕ Cancel Pick'
-                : '\u{1F4CD} Pick This Row From Scene'}
-            </button>
-          </div>
-        ))}
-        <button
-          className="btn btn-ghost"
-          style={{ width: '100%' }}
-          onClick={addRow}
-        >
-          + Add Room
-        </button>
-      </AccordionSection>
-
-      <AccordionSection title="Default Position" defaultOpen>
-        <div className={`placement-hint${open ? ' visible' : ''}`}>
-          Fallback position when no area mapping matches.<br />
-          Click the model after pressing "Pick Default From Scene".
-        </div>
-        {([
-          { label: 'X', color: '#f87171', babylonAxis: 'x' as const, range: [-30, 30] as [number, number] },
-          { label: 'Z', color: '#4ade80', babylonAxis: 'y' as const, range: [-2, 10] as [number, number] },
-          { label: 'Y', color: '#38bdf8', babylonAxis: 'z' as const, range: [-30, 30] as [number, number] },
-        ]).map(({ label: lbl, color: axColor, babylonAxis, range }) => (
-          <div key={babylonAxis} className="pos-grid">
-            <span className="pos-axis" style={{ color: axColor }}>{lbl}</span>
-            <input
-              type="range"
-              className="pos-slider"
-              min={range[0]}
-              max={range[1]}
-              step={0.05}
-              value={position[babylonAxis]}
-              onChange={(e) => handlePosChange(babylonAxis, parseFloat(e.target.value))}
-            />
-            <input
-              type="number"
-              className="pos-num"
-              step={0.05}
-              value={position[babylonAxis]}
-              onChange={(e) => handlePosChange(babylonAxis, parseFloat(e.target.value) || 0)}
-            />
-          </div>
-        ))}
-      </AccordionSection>
+      <div style={{
+        margin: '10px 16px 16px',
+        padding: '8px 12px',
+        background: 'rgba(34, 211, 238, 0.08)',
+        border: '1px solid rgba(34, 211, 238, 0.25)',
+        borderRadius: 6,
+        color: '#94a3b8',
+        fontSize: 12,
+        lineHeight: 1.45,
+      }}>
+        Position is driven by the live BLE solver — Bermuda distances feed
+        k-NN / trilateration / centroid / area-snap automatically. No
+        manual placement needed.
+      </div>
     </FormPanel>
   );
 }
