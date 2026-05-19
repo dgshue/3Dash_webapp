@@ -14,6 +14,12 @@ export default defineConfig(({ mode }) => {
       // Use the existing manifest.json in public/
       manifest: false,
       workbox: {
+        // Force the new SW to activate immediately on deploy instead of
+        // waiting for every tab to close. Without these two flags users
+        // get stuck on stale precached bundles after a push.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         // Precache all built assets (JS, CSS, HTML)
         globPatterns: ['**/*.{js,css,html,svg,woff2}'],
         // Babylon.js bundle is ~7MB — allow precaching since this is a local app

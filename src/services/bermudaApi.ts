@@ -160,13 +160,31 @@ export function parseBermudaDump(dump: BermudaDumpResponse): {
   const anchors: ParsedBermudaAnchor[] = [];
   const entries = Object.entries(dump.service_response || {});
 
+  // Phase B+: walk every device once to extract scanners. A device is a
+  // scanner if Bermuda explicitly flags it OR if it's referenced as a
+  // `scanner_address` by any tracker's adverts. The latter catches scanner
+  // entries that have `_is_scanner` missing in some Bermuda releases.
+  const scannerAddrsFromAdverts = new Set<string>();
+  for (const dev of Object.values(dump.service_response || {})) {
+    if (!dev?.adverts) continue;
+    for (const advert of Object.values(dev.adverts)) {
+      const sc = normalizeAddr(advert.scanner_address || '');
+      if (sc) scannerAddrsFromAdverts.add(sc);
+    }
+  }
+
   for (const [addr, dev] of entries) {
     if (!dev) continue;
     const name = (dev.name_by_user || dev.name_devreg || dev.name || addr) as string;
+    const addrLower = normalizeAddr(addr);
 
-    if (dev._is_scanner === true) {
+    const flaggedScanner = !!dev._is_scanner
+      || (dev._is_scanner as unknown) === 1
+      || (dev._is_scanner as unknown) === 'true';
+    const inferredScanner = scannerAddrsFromAdverts.has(addrLower);
+    if (flaggedScanner || inferredScanner) {
       anchors.push({
-        address: normalizeAddr(addr),
+        address: addrLower,
         name,
         floor: dev.floor_name || 'Main',
         area: dev.area_name || '',

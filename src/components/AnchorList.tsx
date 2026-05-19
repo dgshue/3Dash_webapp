@@ -12,9 +12,9 @@ export default function AnchorList({ anchors, selectedIdx, onSelect, onDelete, o
   if (anchors.length === 0) {
     return (
       <div className="list-empty">
-        No anchors configured.<br />
-        Click <strong>Add Anchor</strong> to place one, or open the dashboard
-        to auto-discover ESPHome anchors from Home Assistant.
+        No scanners configured.<br />
+        Click <strong>+ Add Scanner</strong> to pull the list of BLE
+        scanners Bermuda sees in Home Assistant.
       </div>
     );
   }

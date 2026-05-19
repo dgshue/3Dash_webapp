@@ -1987,7 +1987,7 @@ export default function ConfigEditor() {
       try {
         await updateConfig({ anchors: updated });
         showToast(
-          `Added ${additions.length} anchor${additions.length === 1 ? '' : 's'} from Bermuda`,
+          `Added ${additions.length} scanner${additions.length === 1 ? '' : 's'} from Bermuda`,
         );
       } catch (err) {
         console.error('[Config] Auto-save failed:', err);
@@ -2221,7 +2221,7 @@ export default function ConfigEditor() {
             data-tab="anchors"
             onClick={() => setEditorMode('anchors')}
           >
-            Anchors ({anchors.length})
+            Scanners ({anchors.length})
           </button>
         </div>
 
@@ -2305,18 +2305,13 @@ export default function ConfigEditor() {
               + Add Tracker
             </button>
           ) : (
-            <>
-              <button
-                className="btn btn-primary editor-add-btn"
-                onClick={() => setDiscoveryOpen(true)}
-                title="Pull every BLE scanner Bermuda sees and pick which to add"
-              >
-                + Discover from HA
-              </button>
-              <button className="btn btn-ghost editor-add-btn" onClick={handleAddAnchor}>
-                + Add manually
-              </button>
-            </>
+            <button
+              className="btn btn-primary editor-add-btn"
+              onClick={() => setDiscoveryOpen(true)}
+              title="Add a scanner from the list of BLE proxies Bermuda sees"
+            >
+              + Add Scanner
+            </button>
           )}
           <button className="btn btn-ghost" onClick={handleLoadConfig}>
             &uarr; Reload from server

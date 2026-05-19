@@ -68,7 +68,17 @@ export default function BermudaDiscoveryModal({
           finish();
           return;
         }
+        // Diagnostic — open browser console to see the raw dump shape if
+        // the parsed result looks wrong. Cheap, runs once per modal open.
+        console.info('[BermudaDiscovery] raw dump shape:', {
+          deviceCount: Object.keys(dump.service_response || {}).length,
+          sample: Object.entries(dump.service_response || {})[0],
+        });
         const parsed = parseBermudaDump(dump);
+        console.info(
+          `[BermudaDiscovery] parsed ${parsed.anchors.length} scanners from `
+          + `${Object.keys(dump.service_response || {}).length} bermuda devices`,
+        );
         const next: DiscoveredScanner[] = parsed.anchors.map((a) => ({
           address: a.address,
           name: a.name,
@@ -164,9 +174,10 @@ export default function BermudaDiscoveryModal({
         </div>
 
         <p className="discovery-prompt">
-          Every BLE proxy Bermuda sees can be added as an anchor — not just
-          devices literally named &ldquo;Anchor&rdquo;. After adding, click
-          &ldquo;Pick From Scene&rdquo; on each one to position it in 3D.
+          Every BLE scanner Bermuda sees can be added — including proxies
+          (Voice, Kiosk, Tower BLE Adapter) and dedicated anchors. After
+          adding, click &ldquo;Pick From Scene&rdquo; on each one to
+          position it in 3D.
         </p>
 
         {error && <div className="discovery-error">{error}</div>}
@@ -233,7 +244,7 @@ export default function BermudaDiscoveryModal({
               disabled={selectedCount === 0}
             >
               Add {selectedCount > 0 ? `${selectedCount} ` : ''}
-              {selectedCount === 1 ? 'anchor' : 'anchors'}
+              {selectedCount === 1 ? 'scanner' : 'scanners'}
             </button>
           </div>
         </div>

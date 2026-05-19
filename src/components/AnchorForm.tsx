@@ -115,7 +115,7 @@ export default function AnchorForm({
         {placingMode ? '✕ Cancel Placement' : '\u{1F4CD} Pick From Scene'}
       </button>
       <button className="btn btn-success" onClick={handleSave}>
-        &#10003; Save Anchor
+        &#10003; Save Scanner
       </button>
       <button className="btn btn-ghost" onClick={onClose}>
         Cancel
@@ -126,7 +126,7 @@ export default function AnchorForm({
   return (
     <FormPanel
       open={open}
-      title={editAnchor ? 'Edit Anchor' : 'Add Anchor'}
+      title={editAnchor ? 'Edit Scanner' : 'Add Scanner'}
       onClose={onClose}
       footer={footer}
     >
