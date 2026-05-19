@@ -60,6 +60,7 @@ import {
   createAnchorMesh,
   removeAnchorMesh,
   disposeAllAnchors,
+  setAnchorPosition,
   type AnchorMeshMap,
 } from '../../babylon/AnchorMeshFactory';
 import GuidedTour from '../../components/GuidedTour/GuidedTour';
@@ -787,6 +788,18 @@ export default function ConfigEditor() {
       position.z + normal.z * 0.005,
     );
   }, [position, displayPanelOpen, displayNormal]);
+
+  // Update anchor (scanner) pin position as the user drags sliders / picks
+  // from the scene. Without this the pin only moved on save, so users
+  // thought their edits weren't sticking.
+  useEffect(() => {
+    if (!anchorPanelOpen || anchorEditIdx === null) return;
+    const target = anchorsRef.current[anchorEditIdx];
+    if (!target) return;
+    const entry = anchorMeshMapRef.current[target.deviceId];
+    if (!entry) return;
+    setAnchorPosition(entry, position.x, position.y, position.z);
+  }, [position, anchorPanelOpen, anchorEditIdx]);
 
   // Wrap setPosition for slider changes: push undo entry on first change after idle
   const sliderIdleRef = useRef(true);
