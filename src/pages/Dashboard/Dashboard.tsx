@@ -56,6 +56,8 @@ import {
   type TrilaterationAnchor,
 } from '../../babylon/Trilateration';
 import { PositionKalman } from '../../babylon/PositionKalman';
+import { knnMatch } from '../../babylon/FingerprintSolver';
+import { getFingerprints } from '../../services/calibrationStore';
 import {
   dumpBermudaDevices,
   parseBermudaDump,
@@ -119,6 +121,8 @@ export default function Dashboard() {
   /** Phase 3: handle for an in-progress calibration pick (used to cancel
    *  pick mode if the user closes the wizard mid-pick). */
   const calibrationPickCancelRef = useRef<(() => void) | null>(null);
+  /** Phase 4: cached fingerprints — refreshed each Bermuda poll. */
+  const fingerprintsRef = useRef<ReturnType<typeof getFingerprints>>([]);
   const haRef = useRef<HALike | null>(null);
   const configRef = useRef<AppConfig | null>(null);
   const lastStatesRef = useRef<Record<string, HAState>>({});
@@ -1501,6 +1505,10 @@ export default function Dashboard() {
         if (!dump) { pollErrorCount++; if (pollErrorCount === 6) console.warn('[3Dash][bermuda] persistent dump failures'); return; }
         pollErrorCount = 0;
         const parsed = parseBermudaDump(dump);
+        // Phase 4: refresh fingerprint cache from localStorage. Cheap (it's
+        // a single JSON.parse) and the wizard mutates this independently of
+        // React state, so we can't rely on hook-based reactivity.
+        fingerprintsRef.current = getFingerprints();
 
         // Auto-discover anchors. Phase C fix: ALL Bermuda scanners are valid
         // anchors (Bermuda's dump only lists devices it considers scanners),
@@ -1665,7 +1673,47 @@ export default function Dashboard() {
           let pos: { x: number; y: number; z: number };
           let residual = 99;
 
-          if (sameFloorWithDist.length >= 3) {
+          // ── Phase 4: k-NN fingerprint match (tried first) ──
+          // If the user has captured ≥ 5 same-tracker, same-floor fingerprints
+          // and the live RSSI is close enough to ≥ 3 of them, defer to k-NN.
+          // PadSpan's empirical observation: indoor multipath wrecks RF
+          // distance models, so a fingerprint table beats trilateration once
+          // it's populated.
+          let knnUsed = false;
+          {
+            const allFps = fingerprintsRef.current;
+            const sameTrackerFps = allFps.filter((fp) =>
+              fp.trackerEntityId === tEntityId
+              && (!knownFloor || (fp.floor || '').toLowerCase() === phoneFloor),
+            );
+            if (sameTrackerFps.length >= 5 && Object.keys(rssis).length >= 2) {
+              const result = knnMatch({
+                rssiByAnchor: rssis,
+                fingerprints: sameTrackerFps,
+                k: 3,
+                minSharedAnchors: 2,
+              });
+              if (result && result.qualifiedCount >= 3 && result.confidence >= 0.5) {
+                // Feed k-NN through Kalman so we still get temporal smoothing.
+                let kf = trackerKalmanRef.current[tEntityId];
+                if (!kf) {
+                  kf = new PositionKalman();
+                  kf.init(result.position);
+                  trackerKalmanRef.current[tEntityId] = kf;
+                } else {
+                  kf.predict(dt);
+                }
+                // Higher confidence → smaller measurement noise (tighter trust).
+                const measurementNoise = Math.max(0.3, (1 - result.confidence) * 2.5);
+                kf.update(result.position, measurementNoise);
+                pos = kf.getState().position;
+                residual = measurementNoise;
+                knnUsed = true;
+              }
+            }
+          }
+
+          if (!knnUsed && sameFloorWithDist.length >= 3) {
             // Build solver anchor list — include cross-floor too with weight 0.1
             // so we have data when floor sensor is uncertain. Phase 2: also
             // multiply by per-anchor trustWeight (default 1.0).
@@ -1721,6 +1769,7 @@ export default function Dashboard() {
             debugLogged = true;
             console.info(
               `[3Dash][bermuda] ${tEntityId} floor=${phoneFloor || '?'} ` +
+              `solver=${knnUsed ? 'knn' : sameFloorWithDist.length >= 3 ? 'trilat' : 'centroid'} ` +
               `anchors=${sameFloorWithDist.length}/${totalAvailable}/${anchors.length} ` +
               `pos=(${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)}) ` +
               `res=${residual.toFixed(2)}m`,
