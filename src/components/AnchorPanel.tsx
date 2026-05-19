@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import type { AnchorConfig } from '../types';
+import { getFingerprints } from '../services/calibrationStore';
 import './AnchorPanel.css';
 
 interface Props {
@@ -54,6 +55,12 @@ export default function AnchorPanel({
   onDiagnostics,
 }: Props) {
   const groups = useMemo(() => groupByFloor(anchors), [anchors]);
+  // Phase 3: live fingerprint count for the footer label. We re-read on each
+  // open since the wizard mutates localStorage independently.
+  const [fingerprintCount, setFingerprintCount] = useState(0);
+  useEffect(() => {
+    if (open) setFingerprintCount(getFingerprints().length);
+  }, [open]);
   // Phase 1 back-compat: anchors stored before this phase don't have
   // `placed`. Treat undefined as "placed" since users had to set a position
   // via /editor to get them in there. Only explicit `placed === false`
@@ -164,9 +171,12 @@ export default function AnchorPanel({
           className="anchor-panel-action"
           onClick={onCalibrate}
           disabled={!onCalibrate}
-          title="Coming in Phase 3 — fingerprint calibration"
+          title="Capture a calibration fingerprint at a known spot"
         >
           Calibrate
+          {fingerprintCount > 0 && (
+            <span className="anchor-panel-action-badge">{fingerprintCount}</span>
+          )}
         </button>
         <button
           className="anchor-panel-action"

@@ -136,6 +136,35 @@ export const ANCHOR_CALIBRATION_DEFAULTS = {
   trustWeight: 1.0,
 } as const;
 
+/** Phase 3: a single calibration fingerprint — captured when the user stands
+ *  at a known spot and records what each anchor saw from there. Phase 4's
+ *  k-NN solver uses these as training points: live position is the weighted
+ *  average of the K nearest neighbors in RSSI space.
+ *
+ *  Stored in localStorage["3dash.calibration"] as { fingerprints: CalibrationFingerprint[] }. */
+export interface CalibrationFingerprint {
+  /** UUID — stable so the user can delete individual fingerprints. */
+  id: string;
+  /** World-space position where the user stood (Babylon coords). */
+  position: LightPosition;
+  /** "Main" / "Upper" — derived from the picked y at capture time. */
+  floor: string;
+  /** Which TrackerConfig.entityId was active at capture (so the user knows
+   *  which phone produced this fingerprint, e.g. Daniel vs Greyson). */
+  trackerEntityId: string;
+  /** Per-anchor RSSI in dBm (raw `BermudaAdvert.rssi`). Keyed by anchor
+   *  deviceId (lowercase). Anchors that didn't see the phone at capture
+   *  time are omitted. */
+  rssiByAnchor: Record<string, number>;
+  /** Per-anchor distance in meters (Bermuda's filtered `rssi_distance`,
+   *  same source the live solver uses). Keyed by anchor deviceId. */
+  distanceByAnchor: Record<string, number>;
+  /** Capture time (ms since epoch). */
+  timestamp: number;
+  /** Optional user-supplied label, e.g. "Living Room couch". */
+  label?: string;
+}
+
 // --- Shadow Walls (invisible roof / sun blockers) ---
 
 export interface ShadowWallConfig {

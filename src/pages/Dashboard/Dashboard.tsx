@@ -63,6 +63,7 @@ import {
 } from '../../services/bermudaApi';
 import HUD from '../../components/HUD';
 import AnchorPanel from '../../components/AnchorPanel';
+import CalibrationWizard, { type CaptureSnapshot } from '../../components/CalibrationWizard';
 import LightModal from '../../components/LightModal';
 import RemoteModal from '../../components/RemoteModal';
 import DisplayModal from '../../components/DisplayModal';
@@ -73,7 +74,7 @@ import GuidedTour from '../../components/GuidedTour/GuidedTour';
 import { dashboardTourSteps } from '../../components/GuidedTour/tourSteps';
 import CardPropertiesPanel from '../../components/SidePanel/CardPropertiesPanel';
 import { SIMULATION_CONFIG, SIMULATION_MODEL_URL } from '../../data/simulationData';
-import type { AppConfig, DisplayConfig, LightConfig, RemoteButton, HAState, CardLayout, SidePanelCard, TrackerConfig, AnchorConfig } from '../../types';
+import type { AppConfig, DisplayConfig, LightConfig, LightPosition, RemoteButton, HAState, CardLayout, SidePanelCard, TrackerConfig, AnchorConfig } from '../../types';
 import './Dashboard.css';
 
 const LONG_PRESS_MS = 500;
@@ -110,6 +111,14 @@ export default function Dashboard() {
   const liveAnchorIdsRef = useRef<Set<string>>(new Set());
   /** Phase 1: lifecycle handle for the active anchor click-to-place pick mode. */
   const anchorPickCancelRef = useRef<(() => void) | null>(null);
+  /** Phase 3: latest parsed Bermuda dump (per-tracker readings) — read by the
+   *  calibration wizard to snapshot what each anchor sees. */
+  const lastBermudaTrackersRef = useRef<
+    Record<string, { rssiByAnchor: Record<string, number>; distanceByAnchor: Record<string, number> }>
+  >({});
+  /** Phase 3: handle for an in-progress calibration pick (used to cancel
+   *  pick mode if the user closes the wizard mid-pick). */
+  const calibrationPickCancelRef = useRef<(() => void) | null>(null);
   const haRef = useRef<HALike | null>(null);
   const configRef = useRef<AppConfig | null>(null);
   const lastStatesRef = useRef<Record<string, HAState>>({});
@@ -174,6 +183,11 @@ export default function Dashboard() {
   const [dashboardAnchors, setDashboardAnchors] = useState<AnchorConfig[]>([]);
   /** Phase 1: lowercased scanner addresses seen in the last Bermuda poll. */
   const [liveAnchorIds, setLiveAnchorIds] = useState<Set<string>>(new Set());
+  /** Phase 3: calibration wizard visibility. */
+  const [calibrationWizardOpen, setCalibrationWizardOpen] = useState(false);
+  /** Phase 3: mirror configured trackers so the wizard's tracker dropdown
+   *  refreshes when auto-discovery adds new entries. */
+  const [dashboardTrackers, setDashboardTrackers] = useState<TrackerConfig[]>([]);
   const [cardStates, setCardStates] = useState<Record<string, HAState>>({});
   const [gridEditMode, setGridEditMode] = useState(false);
   const [cardPanelOpen, setCardPanelOpen] = useState(false);
@@ -489,6 +503,40 @@ export default function Dashboard() {
     setPlacingAnchorId(null);
   }, []);
 
+  // Phase 3: Calibration wizard adapters --------------------------------------
+
+  /** Resolve to the next picked point. Wraps `enterPickMode` so the wizard
+   *  doesn't need a Babylon reference. Returns null if the wizard is closed
+   *  before a pick lands (handlers stash a cancel that resolves with null). */
+  const handleRequestCalibrationPick = useCallback((): Promise<LightPosition | null> => {
+    return new Promise((resolve) => {
+      const scene = sceneCtxRef.current?.scene;
+      if (!scene) {
+        resolve(null);
+        return;
+      }
+      calibrationPickCancelRef.current?.();
+      calibrationPickCancelRef.current = enterPickMode(scene, (point) => {
+        calibrationPickCancelRef.current = null;
+        resolve(point);
+      });
+    });
+  }, []);
+
+  const handleCaptureCalibrationSnapshot = useCallback(
+    (trackerEntityId: string): CaptureSnapshot | null => {
+      const snap = lastBermudaTrackersRef.current[trackerEntityId];
+      if (!snap) return null;
+      // Snap stays as a live ref to the most-recent poll. Clone so the wizard
+      // can hold onto it without mutation hazards on the next poll.
+      return {
+        rssiByAnchor: { ...snap.rssiByAnchor },
+        distanceByAnchor: { ...snap.distanceByAnchor },
+      };
+    },
+    [],
+  );
+
   const handleAnchorToggleHidden = useCallback((deviceId: string) => {
     const current = configRef.current?.anchors || [];
     const idx = current.findIndex((a) => a.deviceId === deviceId);
@@ -782,6 +830,7 @@ export default function Dashboard() {
         configRef.current = SIMULATION_CONFIG;
         setSidePanelConfig(SIMULATION_CONFIG.sidePanel);
         setDashboardAnchors(SIMULATION_CONFIG.anchors || []);
+        setDashboardTrackers(SIMULATION_CONFIG.trackers || []);
       } else {
         try {
           const config = await getConfig();
@@ -789,6 +838,7 @@ export default function Dashboard() {
           configRef.current = config;
           setSidePanelConfig(config.sidePanel);
           setDashboardAnchors(config.anchors || []);
+          setDashboardTrackers(config.trackers || []);
           if (config.location.northOffset !== undefined) setNorthOffset(config.location.northOffset);
         } catch (e) {
           console.warn('[Config] Failed to load:', e);
@@ -951,6 +1001,9 @@ export default function Dashboard() {
           try { updateConfig({ trackers: trackerConfigs }); } catch { /* best-effort */ }
           console.info('[3Dash][tracker] backfilled upstairs defaults on existing tracker configs');
         }
+        // Phase 3: mirror trackers into state so the calibration wizard's
+        // dropdown stays in sync with whatever auto-discovery added.
+        setDashboardTrackers(trackerConfigs);
 
         // Create BLE tracker meshes (moving dots for tracked phones/watches)
         for (const tc of trackerConfigs) {
@@ -1157,6 +1210,8 @@ export default function Dashboard() {
       // leave a dangling onPointerDown handler on the disposed scene.
       anchorPickCancelRef.current?.();
       anchorPickCancelRef.current = null;
+      calibrationPickCancelRef.current?.();
+      calibrationPickCancelRef.current = null;
       if (weatherIntervalRef) clearInterval(weatherIntervalRef);
       weatherRef.current?.dispose();
       weatherRef.current = null;
@@ -1535,12 +1590,24 @@ export default function Dashboard() {
 
           // Stash distances + floor for debug + Phase C trilateration later.
           const distances: Record<string, number> = {};
+          // Phase 3: also stash RSSI so the calibration wizard's snapshot
+          // helper can read it without going back to Bermuda. Anchors not in
+          // anchorByDevice are skipped — the wizard only cares about
+          // configured anchors anyway.
+          const rssis: Record<string, number> = {};
           for (const r of bTracker.readings) {
             if (anchorByDevice[r.scannerAddress] && isFinite(r.distance) && r.distance > 0) {
               distances[r.scannerAddress] = r.distance;
             }
+            if (anchorByDevice[r.scannerAddress] && typeof r.rssi === 'number' && isFinite(r.rssi)) {
+              rssis[r.scannerAddress] = r.rssi;
+            }
           }
           trackerDistancesRef.current[tEntityId] = distances;
+          lastBermudaTrackersRef.current[tEntityId] = {
+            rssiByAnchor: rssis,
+            distanceByAnchor: distances,
+          };
           if (bTracker.floor) trackerFloorRef.current[tEntityId] = bTracker.floor;
 
           // ── Phase C: trilateration + Kalman ──
@@ -2184,6 +2251,22 @@ export default function Dashboard() {
           onPlace={handleAnchorPlace}
           onCancelPlace={handleAnchorCancelPlace}
           onToggleHidden={handleAnchorToggleHidden}
+          onCalibrate={() => {
+            setAnchorPanelOpen(false);
+            setCalibrationWizardOpen(true);
+          }}
+        />
+        <CalibrationWizard
+          open={calibrationWizardOpen}
+          onClose={() => {
+            calibrationPickCancelRef.current?.();
+            calibrationPickCancelRef.current = null;
+            setCalibrationWizardOpen(false);
+          }}
+          trackers={dashboardTrackers}
+          anchors={dashboardAnchors}
+          onRequestPick={handleRequestCalibrationPick}
+          onCaptureSnapshot={handleCaptureCalibrationSnapshot}
         />
         {placingAnchorId && (
           <div className="anchor-place-banner">

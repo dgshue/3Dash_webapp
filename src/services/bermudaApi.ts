@@ -68,6 +68,9 @@ export interface AnchorReading {
   scannerName: string;
   /** Distance in meters (number ≥ 0). NaN if unavailable. */
   distance: number;
+  /** Raw RSSI in dBm (e.g. -64). NaN if Bermuda didn't include one for this
+   *  advert. Used by Phase 3 calibration capture and Phase 4 k-NN matching. */
+  rssi: number;
 }
 
 export interface ParsedBermudaTracker {
@@ -182,6 +185,7 @@ export function parseBermudaDump(dump: BermudaDumpResponse): {
 
     const perScanner: Record<string, number> = {};
     const scannerNames: Record<string, string> = {};
+    const scannerRssi: Record<string, number> = {};
     for (const advert of Object.values(dev.adverts || {})) {
       const scAddr = normalizeAddr(advert.scanner_address || '');
       if (!scAddr) continue;
@@ -190,6 +194,10 @@ export function parseBermudaDump(dump: BermudaDumpResponse): {
       if (perScanner[scAddr] === undefined || d < perScanner[scAddr]) {
         perScanner[scAddr] = d;
         scannerNames[scAddr] = advert.name || scAddr;
+        // Take the rssi from the advert that produced the winning (min) distance.
+        scannerRssi[scAddr] = typeof advert.rssi === 'number' && isFinite(advert.rssi)
+          ? advert.rssi
+          : Number.NaN;
       }
     }
 
@@ -197,6 +205,7 @@ export function parseBermudaDump(dump: BermudaDumpResponse): {
       scannerAddress: scAddr,
       scannerName: scannerNames[scAddr] || scAddr,
       distance: d,
+      rssi: scannerRssi[scAddr] ?? Number.NaN,
     }));
 
     trackers.push({
