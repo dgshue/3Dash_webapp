@@ -40,6 +40,7 @@ import {
   animateTrackerTo,
   setTrackerPosition,
   setTrackerVisible,
+  setTrackerConfidence,
   disposeAllTrackers,
   targetForArea,
   type TrackerMeshMap,
@@ -484,6 +485,10 @@ export default function Dashboard() {
       if (scene) {
         for (const entry of Object.values(anchorMapRef.current)) {
           setAnchorDebugRadius(scene, entry, 0);
+        }
+        // Phase 7: also drop tracker confidence spheres.
+        for (const entry of Object.values(trackerMapRef.current)) {
+          setTrackerConfidence(scene, entry, 0);
         }
       }
     }
@@ -1811,6 +1816,27 @@ export default function Dashboard() {
 
           const scene3 = sceneCtxRef.current?.scene;
           if (scene3) animateTrackerTo(scene3, meshEntry, pos);
+
+          // Phase 7: confidence sphere — uses Kalman position σ when alive,
+          // or the solver residual (centroid path) as a fallback. Capped at
+          // 5 m so a degenerate solve doesn't engulf the scene.
+          if (scene3) {
+            if (diagnosticsOnRef.current) {
+              const kf = trackerKalmanRef.current[tEntityId];
+              let confRadius = 0;
+              if (kf?.isInitialized()) {
+                const st = kf.getState();
+                // 1-σ across all three axes — sqrt(variance/3) gives a
+                // symmetric estimate that reads as "average uncertainty".
+                confRadius = Math.sqrt(Math.max(st.positionVarianceTrace, 0) / 3);
+              } else if (isFinite(residual)) {
+                confRadius = Math.min(residual, 5);
+              }
+              setTrackerConfidence(scene3, meshEntry, Math.min(confRadius, 5));
+            } else {
+              setTrackerConfidence(scene3, meshEntry, 0);
+            }
+          }
 
           if (!debugLogged) {
             debugLogged = true;

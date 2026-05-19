@@ -25,6 +25,10 @@ export interface TrackerMeshEntry {
   mat: StandardMaterial;
   config: TrackerConfig;
   currentAreaId?: string;
+  /** Phase 7: translucent confidence sphere — sized by Kalman position
+   *  variance. Hidden by default; toggled on via setTrackerConfidence. */
+  confidenceSphere?: Mesh;
+  confidenceMat?: StandardMaterial;
 }
 
 export type TrackerMeshMap = Record<string, TrackerMeshEntry>;
@@ -86,11 +90,50 @@ export function setTrackerVisible(entry: TrackerMeshEntry, visible: boolean): vo
   entry.sphere.setEnabled(visible);
 }
 
+/**
+ * Phase 7: Show a translucent sphere around the tracker sized by the Kalman
+ * position-uncertainty (1-σ in meters, derived from sqrt(varianceTrace / 3)
+ * for an even-axis approximation). Pass radius <= 0 to hide.
+ *
+ * Not a full covariance ellipsoid (Phase 7 left that as a stretch goal).
+ * A symmetric sphere is plenty for a visual cue — "small sphere = confident,
+ * big sphere = unsure" reads instantly without 9 scalars of math.
+ */
+export function setTrackerConfidence(scene: Scene, entry: TrackerMeshEntry, radius: number): void {
+  if (radius <= 0) {
+    if (entry.confidenceSphere) { entry.confidenceSphere.dispose(); entry.confidenceSphere = undefined; }
+    if (entry.confidenceMat) { entry.confidenceMat.dispose(); entry.confidenceMat = undefined; }
+    return;
+  }
+  if (!entry.confidenceSphere) {
+    const s = MeshBuilder.CreateSphere(
+      `tracker_conf_${entry.config.entityId}`,
+      { diameter: 1, segments: 20 },
+      scene,
+    );
+    s.isPickable = false;
+    s.applyFog = false;
+    s.parent = entry.sphere;  // follows the tracker automatically
+    const m = new StandardMaterial(`tracker_confmat_${entry.config.entityId}`, scene);
+    m.disableLighting = true;
+    m.emissiveColor = Color3.FromHexString(entry.config.color ?? '#4ade80');
+    m.diffuseColor = new Color3(0, 0, 0);
+    m.alpha = 0.12;
+    s.material = m;
+    entry.confidenceSphere = s;
+    entry.confidenceMat = m;
+  }
+  // Diameter, not radius, since we built the sphere with diameter: 1.
+  entry.confidenceSphere.scaling.setAll(radius * 2);
+}
+
 export function removeTrackerMesh(map: TrackerMeshMap, entityId: string): void {
   const e = map[entityId];
   if (!e) return;
   e.sphere.dispose();
   e.mat.dispose();
+  e.confidenceSphere?.dispose();
+  e.confidenceMat?.dispose();
   delete map[entityId];
 }
 

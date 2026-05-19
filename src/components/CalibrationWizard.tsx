@@ -8,8 +8,10 @@ import type {
 import {
   addFingerprint,
   deleteFingerprint,
+  exportFingerprintsJSON,
   generateFingerprintId,
   getFingerprints,
+  importFingerprintsJSON,
 } from '../services/calibrationStore';
 import './CalibrationWizard.css';
 
@@ -144,6 +146,56 @@ export default function CalibrationWizard({
     () => (open ? getFingerprints() : []),
     [open, savedCount],
   );
+
+  // Phase 7: export/import flow for backing up calibration data so a
+  // container redeploy or browser-storage wipe doesn't lose it.
+  const handleExport = useCallback(() => {
+    try {
+      const json = exportFingerprintsJSON();
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `3dash-calibration-${ts}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.warn('[3Dash][calibration] export failed:', err);
+      setError('Export failed — see console for details.');
+    }
+  }, []);
+
+  const handleImportClick = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const mode = window.confirm(
+          'Merge with existing fingerprints? Click OK to merge, Cancel to replace.',
+        )
+          ? 'merge'
+          : 'replace';
+        const total = importFingerprintsJSON(text, mode);
+        setSavedCount(total);
+        setError(null);
+      } catch (err) {
+        console.warn('[3Dash][calibration] import failed:', err);
+        setError(
+          err instanceof Error
+            ? `Import failed: ${err.message}`
+            : 'Import failed — see console for details.',
+        );
+      }
+    };
+    input.click();
+  }, []);
 
   const seenAnchorCount = useMemo(() => {
     if (!snapshot) return 0;
@@ -286,7 +338,24 @@ export default function CalibrationWizard({
             the wizard. */}
         <div className="cal-wizard-list">
           <div className="cal-wizard-list-header">
-            Fingerprints ({fingerprints.length})
+            <span>Fingerprints ({fingerprints.length})</span>
+            <span className="cal-wizard-list-actions">
+              <button
+                className="cal-wizard-list-btn"
+                onClick={handleExport}
+                disabled={fingerprints.length === 0}
+                title="Download all fingerprints as JSON"
+              >
+                Export
+              </button>
+              <button
+                className="cal-wizard-list-btn"
+                onClick={handleImportClick}
+                title="Restore fingerprints from a previous export"
+              >
+                Import
+              </button>
+            </span>
           </div>
           {fingerprints.length === 0 ? (
             <div className="cal-wizard-list-empty">
