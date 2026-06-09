@@ -11,13 +11,14 @@ After installing and starting the add-on:
 1. Open the **3Dash** entry in HA's left sidebar (panel icon: floor-plan).
 2. Click **Open Web UI** if you prefer a separate tab.
 3. The onboarding wizard runs the first time you open it:
-   - HA URL/port — usually default works under ingress.
-   - **Long-lived access token** — create one at HA profile → Security.
+   - **No access token needed** — under ingress the add-on relays the HA
+     WebSocket with its own Supervisor credentials, so the connection
+     authenticates automatically.
    - Lat/lng for sun tracking.
    - Upload a `.glb` 3D model of your home.
 
 There is **no host port** exposed. All traffic flows through HA's ingress
-proxy.
+proxy, so there is no certificate warning and it works in the Companion App.
 
 ## BLE positioning (this fork)
 
@@ -52,9 +53,10 @@ All configuration happens in the browser — no files to edit manually.
 ## Backup and restore
 
 Export your full configuration (lights, displays, settings, 3D model)
-as a ZIP from the settings panel. Calibration fingerprints live in
-`localStorage["3dash.calibration"]` (export/import flow coming in
-Phase 7).
+as a ZIP from the settings panel, including calibration fingerprints.
+Under ingress, your settings and 3D model are also persisted server-side
+in the add-on's `/data` directory, so they survive add-on updates and
+browser/kiosk resets automatically.
 
 ## Support
 
