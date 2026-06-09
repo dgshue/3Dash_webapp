@@ -2277,7 +2277,7 @@ export default function ConfigEditor() {
           <span className="sidebar-title">&#9881; Editor</span>
           <div className="sidebar-header-actions">
             <Link to="/" className="back-btn">
-              &larr; Dashboard
+              &larr; Back
             </Link>
           </div>
         </div>

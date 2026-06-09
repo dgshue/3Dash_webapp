@@ -8,6 +8,7 @@ import {
   Radar, MapPin, AlertTriangle, GitFork,
 } from 'lucide-react';
 import { buildWsUrl, type HAConnectionError, type HAConnectionStatus } from '../services/haWebSocket';
+import { isIngress } from '../utils/embedMode';
 import type { HASettings } from '../types';
 import { getConfig, resetConfig, updateConfig, exportBackup, importBackup } from '../services/configApi';
 import { clearSettings, getSetting, getSettings, updateSettings } from '../services/settingsStore';
@@ -527,14 +528,14 @@ export default function SettingsModal({
                   title="Edit lights, displays, walls, tubes, trackers, and scanners"
                 >
                   <LayoutDashboard size={20} strokeWidth={1.5} />
-                  <span>Edit Scene</span>
+                  <span>Editor</span>
                 </Link>
                 <button
                   className="settings-big-btn"
                   onClick={() => { onEditGrid(); onClose(); }}
                 >
                   <LayoutTemplate size={20} strokeWidth={1.5} />
-                  <span>Edit Grid</span>
+                  <span>Edit Panel</span>
                 </button>
               </div>
             </div>
@@ -567,6 +568,20 @@ export default function SettingsModal({
                   </div>
                 </div>
 
+                {isIngress() ? (
+                  !demoMode && (
+                  <div className="settings-section">
+                    <div className="settings-section-label">Home Assistant</div>
+                    <div className="settings-ingress-status">
+                      <Server size={16} strokeWidth={1.5} />
+                      <div className="settings-ingress-status-text">
+                        <div className="settings-ingress-status-title">Connected via Ingress</div>
+                        <div className="settings-ingress-status-sub">3Dash authenticates through the Home Assistant add-on — no URL or token needed.</div>
+                      </div>
+                    </div>
+                  </div>
+                  )
+                ) : (
                 <div className="settings-section">
                   <div className="settings-section-label">Home Assistant</div>
                   <div className="settings-ha-fields">
@@ -620,6 +635,7 @@ export default function SettingsModal({
                     </button>
                   </div>
                 </div>
+                )}
 
                 {/* C4: surface the last connection error so the user doesn't
                     have to open devtools to see why HA dropped. */}

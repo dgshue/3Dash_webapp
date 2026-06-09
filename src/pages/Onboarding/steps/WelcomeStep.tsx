@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import AnimatedLogo from '../../../components/AnimatedLogo';
+import { isIngress } from '../../../utils/embedMode';
 
 interface Props {
   onConnect: () => void;
@@ -32,7 +33,7 @@ export default function WelcomeStep({ onConnect, onSimulation, onImport }: Props
 
       <div className="onboarding-welcome-actions">
         <button className="onboarding-btn primary" onClick={onConnect} disabled={importing}>
-          Connect to Home Assistant
+          {isIngress() ? 'Set Up 3Dash' : 'Connect to Home Assistant'}
         </button>
         <button className="onboarding-btn simulation" onClick={onSimulation} disabled={importing}>
           Try Simulation

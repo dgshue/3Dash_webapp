@@ -6,6 +6,7 @@ import { useDemoMode } from '../../contexts/DemoModeContext';
 import { useSimulationMode } from '../../contexts/SimulationModeContext';
 import { getConfig, updateConfig, importBackup, getModelBlob } from '../../services/configApi';
 import { getSettings, getSetting } from '../../services/settingsStore';
+import { isIngress } from '../../utils/embedMode';
 import WelcomeStep from './steps/WelcomeStep';
 import ImportReportStep from './steps/ImportReportStep';
 import HASetupStep, { testHA } from './steps/HASetupStep';
@@ -80,7 +81,9 @@ export default function Onboarding() {
 
   const handleConnect = useCallback(() => {
     setDemoMode(false);
-    goTo(2); // HA setup
+    // Under Ingress the add-on relays HA automatically — no token step needed,
+    // so jump straight to the 3D model upload.
+    goTo(isIngress() ? 3 : 2);
   }, [goTo, setDemoMode]);
 
   const handleSimulation = useCallback(() => {
@@ -161,8 +164,8 @@ export default function Onboarding() {
   }, [goTo]);
 
   const handleImportReportContinue = useCallback(() => {
-    if (importReport?.haStatus === 'success') {
-      // HA works — go straight to dashboard
+    if (importReport?.haStatus === 'success' || isIngress()) {
+      // HA works (or Ingress relays it automatically) — go straight to dashboard
       updateConfig({ onboarding: { completed: true } });
       window.location.href = '/';
     } else {
@@ -196,11 +199,14 @@ export default function Onboarding() {
   // Connect: Welcome → HA → Model → Location → Done
   // Import:  Welcome → Report → (HA →) Dashboard  (HA only if connection failed)
   // Simulation: goes directly to dashboard (not through these steps)
+  const ingress = isIngress();
   const pathSteps: number[] = isImportMode
-    ? importReport?.haStatus === 'success'
+    ? importReport?.haStatus === 'success' || ingress
       ? [0, 1]           // report then dashboard
       : [0, 1, 2]        // report then HA then dashboard
-    : [0, 2, 3, 4, 5];   // full path
+    : ingress
+      ? [0, 3, 4, 5]     // Ingress: HA auto-connects, skip the token step
+      : [0, 2, 3, 4, 5]; // full path
 
   const dotIndex = pathSteps.indexOf(currentStep);
   const dotCount = pathSteps.length;

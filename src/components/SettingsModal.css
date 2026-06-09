@@ -694,6 +694,30 @@
   margin-top: 4px;
 }
 
+/* Ingress connection status — shown instead of URL/token fields when the
+   add-on relays HA automatically (no credentials needed). */
+.settings-ingress-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.settings-ingress-status svg { flex-shrink: 0; margin-top: 1px; color: var(--green, #22c55e); }
+.settings-ingress-status-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green, #22c55e);
+  margin-bottom: 2px;
+}
+.settings-ingress-status-sub {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 /* Geocoding result list */
 .settings-geo-results {
   display: flex;
