@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.4.1
+
+**UI cleanup for tokenless Ingress.**
+
+- Settings → Connection hides the HA URL/port/token fields under Ingress and
+  shows a "Connected via Ingress" status instead (fields remain for the
+  standalone web build).
+- Onboarding skips the Home Assistant token step under Ingress.
+- Collapsed the Live / Demo / Simulation modes into one user-facing concept:
+  **Live** vs **Demo** (the bundled sample home is just "Demo" now).
+- Terminology: "Edit Scene" → "Editor", "Edit Grid" → "Edit Panel", and the
+  editor's back button reads "← Back".
+- Fixed indicator/display history graphs not rendering sample data in the demo.
+
 ## 1.4.0
 
 **Production Ingress — tokenless auth & durable config.**

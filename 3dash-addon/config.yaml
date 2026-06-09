@@ -1,5 +1,5 @@
 name: "3Dash"
-version: "1.4.0"
+version: "1.4.1"
 slug: "3dash"
 description: "3D Dashboard for Home Assistant — BLE positioning fork with calibration"
 url: "https://github.com/dgshue/3Dash_webapp"
