@@ -1,13 +1,12 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
 
-# Stage 1: Build the SPA from the dgshue fork. REPO_REF defaults to the branch
-# carrying the Phase 8 ingress/persistence work; override (REPO_URL / REPO_REF)
-# to pin a tag or test a PR.
+# Stage 1: Build the SPA from the dgshue fork. REPO_REF defaults to main (the
+# shipping branch); override (REPO_URL / REPO_REF) to pin a tag or test a PR.
 FROM node:20-alpine AS builder
 
 ARG BUILD_VERSION
 ARG REPO_URL=https://github.com/dgshue/3Dash_webapp.git
-ARG REPO_REF=feat/production-ingress
+ARG REPO_REF=main
 RUN apk add --no-cache git
 WORKDIR /app
 RUN git clone --depth 1 --branch ${REPO_REF} ${REPO_URL} .
