@@ -98,8 +98,16 @@ export default function SidePanel({ config, ha, cardStates, onSettingsOpen, pane
     }
   }, [onDragStart]);
 
+  // The panel only earns its rail when it has cards to show or is being edited.
+  // Otherwise it collapses to nothing and the Settings gear floats in a corner,
+  // so an unconfigured dashboard doesn't show an empty bar down the left edge.
+  const hasContent = !!(config && config.cards.length > 0) || !!editMode;
+
   return (
-    <div className="side-panel" style={{ width: `${panelSize}px` }}>
+    <div
+      className={`side-panel${hasContent ? '' : ' side-panel--collapsed'}`}
+      style={hasContent ? { width: `${panelSize}px` } : undefined}
+    >
       <div className="side-panel-inner" ref={innerRef}>
         <div className="side-panel-content">
           {config && config.cards.length > 0 && (
@@ -142,13 +150,15 @@ export default function SidePanel({ config, ha, cardStates, onSettingsOpen, pane
           )}
         </div>
       </div>
-      <div
-        className="side-panel-handle"
-        onMouseDown={handleMouseDown}
-        onTouchStart={handleTouchStart}
-      >
-        <div className="side-panel-handle-bar" />
-      </div>
+      {hasContent && (
+        <div
+          className="side-panel-handle"
+          onMouseDown={handleMouseDown}
+          onTouchStart={handleTouchStart}
+        >
+          <div className="side-panel-handle-bar" />
+        </div>
+      )}
     </div>
   );
 }

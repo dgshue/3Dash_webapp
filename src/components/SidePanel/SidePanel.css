@@ -108,6 +108,67 @@
   }
 }
 
+/* === Collapsed: no cards and not editing ===
+ * Don't reserve a rail. The panel shrinks to zero and its only control — the
+ * Settings gear (plus Exit Simulation, if present) — floats in the bottom-left
+ * corner. Embed mode floats the gear bottom-right via a more specific rule in
+ * App.css, so this never double-positions. */
+.side-panel--collapsed {
+  width: 0 !important;
+  background: none;
+  background-image: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-right: none;
+  overflow: visible;
+}
+
+.side-panel--collapsed .side-panel-inner {
+  width: auto;
+  padding: 0;
+  overflow: visible;
+}
+
+.side-panel--collapsed .side-panel-content {
+  overflow: visible;
+}
+
+.side-panel--collapsed .side-panel-settings-btn,
+.side-panel--collapsed .side-panel-exit-sim-btn {
+  position: fixed;
+  left: 16px;
+  z-index: 40;
+  width: auto;
+  margin-top: 0;
+  padding: 6px 10px;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.3);
+  opacity: 0.55;
+}
+
+.side-panel--collapsed .side-panel-settings-btn { bottom: 16px; }
+.side-panel--collapsed .side-panel-exit-sim-btn { bottom: 56px; }
+
+@media (hover: hover) and (pointer: fine) {
+  .side-panel--collapsed .side-panel-settings-btn:hover,
+  .side-panel--collapsed .side-panel-exit-sim-btn:hover {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 768px) {
+  .side-panel--collapsed {
+    height: 0 !important;
+    border-top: none;
+  }
+  .side-panel--collapsed .side-panel-settings-btn {
+    bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  .side-panel--collapsed .side-panel-exit-sim-btn {
+    bottom: calc(56px + env(safe-area-inset-bottom));
+  }
+}
+
 /* === Common styles === */
 
 .side-panel-settings-btn {

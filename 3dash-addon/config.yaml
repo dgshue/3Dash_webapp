@@ -1,5 +1,5 @@
 name: "3Dash"
-version: "1.3.0"
+version: "1.4.0"
 slug: "3dash"
 description: "3D Dashboard for Home Assistant — BLE positioning fork with calibration"
 url: "https://github.com/dgshue/3Dash_webapp"
@@ -13,11 +13,20 @@ boot: "auto"
 
 # Phase 6: HA ingress. The Companion App refuses self-signed certs, so
 # serving 3Dash via HA's ingress is the only path that works on iOS.
-# `ingress_port: 8099` tells HA's ingress proxy which internal port nginx
-# is on. We drop the host-port mapping entirely — no more 8099/tcp on the
-# HA host.
+# `ingress_port: 8099` tells HA's ingress proxy which internal port the
+# server is on. We drop the host-port mapping entirely — no more 8099/tcp
+# on the HA host.
 ingress: true
 ingress_port: 8099
+
+# Phase 8: tokenless connection + durable config.
+# `homeassistant_api: true` injects SUPERVISOR_TOKEN and lets the add-on reach
+# core at ws://supervisor/core/websocket. The Node server (server/server.js)
+# relays the browser's WebSocket through that — so 3Dash no longer needs a
+# long-lived access token. The same server persists config/settings/model to
+# /data, which Home Assistant preserves across add-on updates, so settings
+# survive upgrades instead of being re-entered each time.
+homeassistant_api: true
 
 # Sidebar integration so 3Dash shows up in HA's left nav.
 panel_icon: "mdi:floor-plan"

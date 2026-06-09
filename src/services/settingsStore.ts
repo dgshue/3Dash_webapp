@@ -1,6 +1,12 @@
 import type { HASettings } from '../types';
 import type { CameraControlsFlags } from '../contexts/CameraControlsContext';
 import { isSimulationActive } from '../contexts/SimulationModeContext';
+import { isIngress } from '../utils/embedMode';
+
+/** Placeholder connection used under HA Ingress. The relay authenticates with
+ *  the Supervisor token, so the browser needs no real host/token — these values
+ *  exist only to satisfy the `url && token` guards at the connection sites. */
+const INGRESS_HA_SETTINGS: HASettings = { url: 'ingress', port: 0, token: 'ingress' };
 
 type ThemeMode = 'dark' | 'light' | 'auto' | 'system';
 
@@ -271,15 +277,24 @@ export function setSimulationSettingsOverride(s: AppSettings | null): void {
   simulationSettingsOverride = s ? structuredClone(s) : null;
 }
 
+/** Apply the Ingress connection override in place (no-op when not under Ingress
+ *  or when the user explicitly chose demo mode). */
+function applyIngressConnection(settings: AppSettings): AppSettings {
+  if (isIngress() && settings.connection.mode !== 'demo') {
+    settings.connection = { mode: 'live', haSettings: { ...INGRESS_HA_SETTINGS } };
+  }
+  return settings;
+}
+
 /** Read all settings from localStorage (or from the simulation override). */
 export function getSettings(): AppSettings {
   if (simulationSettingsOverride) return structuredClone(simulationSettingsOverride);
 
   const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return structuredClone(DEFAULT_SETTINGS);
+  if (!raw) return applyIngressConnection(structuredClone(DEFAULT_SETTINGS));
   try {
     const parsed = JSON.parse(raw);
-    return {
+    return applyIngressConnection({
       connection: { ...DEFAULT_SETTINGS.connection, ...parsed.connection },
       appearance: { ...DEFAULT_SETTINGS.appearance, ...parsed.appearance },
       render: { ...DEFAULT_SETTINGS.render, ...parsed.render },
@@ -287,9 +302,9 @@ export function getSettings(): AppSettings {
       controls: { ...DEFAULT_SETTINGS.controls, ...parsed.controls },
       tracking: { ...DEFAULT_SETTINGS.tracking, ...parsed.tracking },
       misc: { ...DEFAULT_SETTINGS.misc, ...parsed.misc },
-    };
+    });
   } catch {
-    return structuredClone(DEFAULT_SETTINGS);
+    return applyIngressConnection(structuredClone(DEFAULT_SETTINGS));
   }
 }
 

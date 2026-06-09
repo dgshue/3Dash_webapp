@@ -1,0 +1,13 @@
+{
+  "name": "3dash-addon-server",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Ingress server for the 3Dash add-on: serves the SPA, relays the HA WebSocket with the Supervisor token, and persists config to /data.",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

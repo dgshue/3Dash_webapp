@@ -3,6 +3,7 @@ import type { AnchorConfig, AppConfig, DisplayConfig, LightConfig, LightGroup, S
 import { saveModel as dbSaveModel, getModel as dbGetModel, deleteModel as dbDeleteModel } from './storageApi';
 import { getSettings, setAllSettings, type AppSettings } from './settingsStore';
 import { isSimulationActive } from '../contexts/SimulationModeContext';
+import { pushModel, deleteModelOnServer } from './serverStore';
 
 const CONFIG_KEY = 'config';
 
@@ -65,9 +66,10 @@ export function updateConfig(data: {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(merged));
 }
 
-/** Store a GLB model file in IndexedDB. */
+/** Store a GLB model file in IndexedDB (and mirror to the add-on server under Ingress). */
 export async function uploadModel(file: File): Promise<void> {
   await dbSaveModel(file);
+  await pushModel(file);
 }
 
 /** Get the GLB model blob from IndexedDB. */
@@ -75,10 +77,11 @@ export async function getModelBlob(): Promise<Blob | null> {
   return dbGetModel();
 }
 
-/** Remove config from localStorage and model from IndexedDB. */
+/** Remove config from localStorage and model from IndexedDB (and the add-on server). */
 export async function resetConfig(): Promise<void> {
   localStorage.removeItem(CONFIG_KEY);
   await dbDeleteModel();
+  await deleteModelOnServer();
 }
 
 /** Export config + settings + model as a downloadable ZIP. */

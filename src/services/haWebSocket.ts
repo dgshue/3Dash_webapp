@@ -1,4 +1,5 @@
 import type { HAState } from '../types';
+import { isIngress, ingressBasePath } from '../utils/embedMode';
 
 export type HAConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error' | 'auth_error';
 
@@ -37,9 +38,16 @@ export interface HAConnectOptions {
   token: string;
 }
 
-/** Build a WebSocket URL, using wss:// when the page is served over HTTPS. */
+/** Build a WebSocket URL, using wss:// when the page is served over HTTPS.
+ *
+ * Under HA Ingress the host/port are ignored: we connect same-origin to the
+ * add-on's relay (`<ingress>/3dash-ws`), which authenticates upstream with the
+ * Supervisor token. The caller's token is unused in that path. */
 export function buildWsUrl(url: string, port: number): string {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  if (isIngress()) {
+    return `${protocol}://${window.location.host}${ingressBasePath()}3dash-ws`;
+  }
   return `${protocol}://${url}:${port}/api/websocket`;
 }
 

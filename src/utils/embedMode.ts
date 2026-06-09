@@ -45,6 +45,37 @@ export function isReadonly(): boolean {
 }
 
 /**
+ * Returns true when 3Dash is served behind Home Assistant Ingress (i.e. as the
+ * add-on). HA proxies the add-on under `/api/hassio_ingress/<token>/...`, so the
+ * presence of that segment in the path is a reliable signal. In this mode the
+ * add-on's Node server relays the HA WebSocket with the Supervisor token and
+ * persists config to /data, so the browser needs no long-lived token.
+ */
+export function isIngress(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    return window.location.pathname.includes('/api/hassio_ingress/');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The Ingress base path (everything up to and including the token segment, with
+ * a trailing slash), e.g. `/api/hassio_ingress/abc123/`. Used to build same-
+ * origin URLs for the relay WebSocket and the persistence endpoints. Falls back
+ * to `/` when not running under Ingress.
+ */
+export function ingressBasePath(): string {
+  try {
+    const m = window.location.pathname.match(/^(.*\/api\/hassio_ingress\/[^/]+\/)/);
+    return m ? m[1] : '/';
+  } catch {
+    return '/';
+  }
+}
+
+/**
  * Apply the `embedded` class to <body> based on `isEmbedded()`.
  * Also applies `embedded-readonly` when `?readonly=1` is present (only meaningful
  * while embedded, but harmless to apply standalone).
