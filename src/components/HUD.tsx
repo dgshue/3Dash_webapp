@@ -94,7 +94,7 @@ export default function HUD({
       <div className="corner bl" />
       <div className="corner br" />
 
-      <div className={`title-bar${simulationMode ? ' demo' : demoMode ? ' demo' : ''}`}>
+      <div className={`title-bar${simulationMode || demoMode ? ' demo' : ''}`}>
         <svg className="hud-logo" viewBox={LOGO_2D_VIEWBOX} xmlns="http://www.w3.org/2000/svg">
           <defs>
             <filter id="hud-glow" x="-80%" y="-80%" width="260%" height="260%">
@@ -118,7 +118,7 @@ export default function HUD({
             ))}
           </g>
         </svg>
-        <div className="label">{'3Dash'}<span className="label-sep">{' · '}</span>{simulationMode ? 'Simulation' : demoMode ? 'Demo View' : 'Live View'}</div>
+        <div className="label">{'3Dash'}<span className="label-sep">{' · '}</span>{simulationMode || demoMode ? 'Demo View' : 'Live View'}</div>
       </div>
 
       <div className="time-display">

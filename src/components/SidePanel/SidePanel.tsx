@@ -143,7 +143,7 @@ export default function SidePanel({ config, ha, cardStates, onSettingsOpen, pane
               )}
               {onExitSimulation && (
                 <button className="side-panel-exit-sim-btn" onClick={onExitSimulation}>
-                  Exit Simulation
+                  Exit Demo
                 </button>
               )}
             </>

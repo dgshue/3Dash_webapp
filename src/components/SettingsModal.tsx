@@ -14,6 +14,7 @@ import { getConfig, resetConfig, updateConfig, exportBackup, importBackup } from
 import { clearSettings, getSetting, getSettings, updateSettings } from '../services/settingsStore';
 import { searchLocation, type GeocodingResult } from '../services/geocodingApi';
 import { useDemoMode } from '../contexts/DemoModeContext';
+import { useSimulationMode } from '../contexts/SimulationModeContext';
 import { useCameraControls, type CameraControlsFlags } from '../contexts/CameraControlsContext';
 import {
   useTheme,
@@ -172,6 +173,10 @@ export default function SettingsModal({
 }: Props) {
   const navigate = useNavigate();
   const { demoMode, setDemoMode } = useDemoMode();
+  const { simulationMode } = useSimulationMode();
+  // Both "demo data on your house" and the bundled sample home read as one
+  // concept ("Demo") to the user — keep all the connection UI in agreement.
+  const demoActive = demoMode || simulationMode;
   const { desktop, mobile, toggleDesktop, toggleMobile } = useCameraControls();
   const { theme, resolved, setTheme, refreshAppearance } = useTheme();
 
@@ -554,13 +559,13 @@ export default function SettingsModal({
                   <div className="settings-section-label">Mode</div>
                   <div className="settings-mode-toggle">
                     <button
-                      className={`settings-mode-btn${!demoMode ? ' active live' : ''}`}
+                      className={`settings-mode-btn${!demoActive ? ' active live' : ''}`}
                       onClick={() => setDemoMode(false)}
                     >
                       Live
                     </button>
                     <button
-                      className={`settings-mode-btn${demoMode ? ' active demo' : ''}`}
+                      className={`settings-mode-btn${demoActive ? ' active demo' : ''}`}
                       onClick={() => setDemoMode(true)}
                     >
                       Demo
@@ -569,7 +574,7 @@ export default function SettingsModal({
                 </div>
 
                 {isIngress() ? (
-                  !demoMode && (
+                  !demoActive && (
                   <div className="settings-section">
                     <div className="settings-section-label">Home Assistant</div>
                     <div className="settings-ingress-status">
@@ -1475,8 +1480,8 @@ export default function SettingsModal({
                     </span>
                   </div>
                   <div className="settings-status-chip">
-                    HA <span style={{ color: demoMode ? 'var(--orange)' : haStatusColor }}>
-                      {demoMode ? 'demo' : haStatusText}
+                    HA <span style={{ color: demoActive ? 'var(--orange)' : haStatusColor }}>
+                      {demoActive ? 'demo' : haStatusText}
                     </span>
                   </div>
                   <div className="settings-status-chip">

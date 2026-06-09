@@ -36,7 +36,7 @@ export default function WelcomeStep({ onConnect, onSimulation, onImport }: Props
           {isIngress() ? 'Set Up 3Dash' : 'Connect to Home Assistant'}
         </button>
         <button className="onboarding-btn simulation" onClick={onSimulation} disabled={importing}>
-          Try Simulation
+          Try the Demo
         </button>
         <button
           className="onboarding-btn import"

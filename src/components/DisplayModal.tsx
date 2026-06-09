@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { DisplayConfig, HAState, HAHistoryPoint } from '../types';
 import { fetchHistory, generateDemoHistory } from '../services/haHistoryApi';
 import { useDemoMode } from '../contexts/DemoModeContext';
+import { useSimulationMode } from '../contexts/SimulationModeContext';
 import LucideIcon from './SidePanel/cards/LucideIcon';
 import './SidePanel/cards/IndicatorModal.css';
 
@@ -65,12 +66,13 @@ function SensorGraph({ entityId, label, unit, precision }: {
   precision?: number;
 }) {
   const { demoMode } = useDemoMode();
+  const { simulationMode } = useSimulationMode();
   const [period, setPeriod] = useState<string>('24h');
   const [points, setPoints] = useState<HAHistoryPoint[]>([]);
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    if (demoMode) {
+    if (demoMode || simulationMode) {
       setPoints(generateDemoHistory(period));
       setError(false);
       return;
@@ -86,7 +88,7 @@ function SensorGraph({ entityId, label, unit, precision }: {
     };
     load();
     return () => { cancelled = true; };
-  }, [entityId, period, demoMode]);
+  }, [entityId, period, demoMode, simulationMode]);
 
   const numericPoints = points
     .map(p => ({ value: parseFloat(p.state), time: new Date(p.last_changed).getTime() }))

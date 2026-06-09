@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import type { IndicatorCard, HAState, HAHistoryPoint } from '../../../types';
 import { fetchHistory, generateDemoHistory } from '../../../services/haHistoryApi';
 import { useDemoMode } from '../../../contexts/DemoModeContext';
+import { useSimulationMode } from '../../../contexts/SimulationModeContext';
 import LucideIcon from './LucideIcon';
 import './IndicatorModal.css';
 
@@ -70,6 +71,7 @@ export default function IndicatorModal({
   onSetHvacMode,
 }: Props) {
   const { demoMode } = useDemoMode();
+  const { simulationMode } = useSimulationMode();
   const [period, setPeriod] = useState<string>('24h');
   const [points, setPoints] = useState<HAHistoryPoint[]>([]);
   const [error, setError] = useState(false);
@@ -80,7 +82,7 @@ export default function IndicatorModal({
   useEffect(() => {
     if (!visible) return;
 
-    if (demoMode) {
+    if (demoMode || simulationMode) {
       setPoints(generateDemoHistory(period));
       setError(false);
       return;
@@ -97,7 +99,7 @@ export default function IndicatorModal({
     };
     load();
     return () => { cancelled = true; };
-  }, [card.entityId, period, visible, demoMode]);
+  }, [card.entityId, period, visible, demoMode, simulationMode]);
 
   // Sync climate state
   useEffect(() => {
